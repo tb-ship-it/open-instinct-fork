@@ -40,6 +40,7 @@ import { contextTools } from "@open-instinct/context";
 import { networkTools } from "@open-instinct/network";
 import { ChatAwareOutbox, ConsoleOutbox, type ChatReplyBuffer } from "./console-outbox.js";
 import { fileTools, resolveInsideWorkspace } from "./file-tools.js";
+import { attachmentTool } from "./attachments.js";
 import { describeDataPart, promptExtraFor } from "./hooks.js";
 import { appsNotConfiguredTool, setupSummaryFor } from "./setup-summary.js";
 import { createScheduleSync, type ScheduleSync } from "./maritime-schedules.js";
@@ -218,6 +219,9 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
   }) : undefined;
 
   registry.registerMany(fileTools(state.path("workspace"), { env }));
+  // Attachments people send are opened through their own narrow tool, so email (tier partner)
+  // can see a photo or PDF without the general file tools.
+  registry.register(attachmentTool({ inboundDir: state.path("workspace", "inbound"), env, ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) }));
 
   // Web app deploys through Ample: with the deployer's credential, or with an
   // account this agent signs up for itself on the first deploy (AMPLE_SIGNUP=1),

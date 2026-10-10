@@ -1484,7 +1484,7 @@ function withAttachments(text: string, msg: InboundMessage): string {
   const lines = msg.attachments.map((a) => {
     const name = flat(a.name, 200);
     const type = flat(a.mimeType, 80);
-    const where = a.path ? ` path=${flat(a.path, 300)}` : a.url ? ` url=${a.url.replace(/[\r\n]+/g, "").trim()}` : "";
+    const where = a.path ? ` path=${flat(a.path, 300)} (open with open_attachment)` : a.url ? ` url=${a.url.replace(/[\r\n]+/g, "").trim()}` : "";
     return `[attachment${name ? ` ${name}` : ""}${type ? ` ${type}` : ""}${where}]`;
   });
   return `${text}\n${lines.join("\n")}`;
