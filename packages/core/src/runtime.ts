@@ -1260,7 +1260,7 @@ export function writeSession(file: string, messages: AgentMessage[]): void {
  * summary message. Idempotent on an already folded transcript.
  */
 export function restoreMessages(stored: AgentMessage[], now: Date, keep = SESSION_KEEP_MESSAGES, maxChars = SESSION_KEEP_CHARS, keepImages = KEEP_RECENT_IMAGES): AgentMessage[] {
-  const messages = dropOldImages(dropOrphanToolCalls(stored.filter((m) => m.role !== "system")), keepImages);
+  const messages = dropOldImages(dropOrphanToolResults(dropOrphanToolCalls(stored.filter((m) => m.role !== "system")), keepImages));
   let start = messages.length <= keep ? 0 : nextUserTurn(messages, messages.length - keep);
   // Large tool results can blow the context long before the message count does. The slice
   // only ever moves to a user or assistant turn; when none is left it stays where it is,
@@ -1325,6 +1325,15 @@ export function dropOldImages(messages: AgentMessage[], keepImages = KEEP_RECENT
     out[i] = { ...m, content: m.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "(an earlier screenshot, dropped to save space)" } : c)) };
   }
   return out;
+}
+
+/** A tool result whose call is not earlier in the transcript is rejected by the model API; drop it. */
+function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] {
+  const callIds = new Set<string>();
+  return messages.filter((m) => {
+    if (m.role === "assistant") for (const c of m.content) if (c.type === "toolCall") callIds.add(c.id);
+    return m.role !== "toolResult" || callIds.has(m.toolCallId);
+  });
 }
 
 function charSize(messages: AgentMessage[]): number {
