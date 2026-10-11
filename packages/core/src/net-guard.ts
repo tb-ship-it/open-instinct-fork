@@ -76,8 +76,12 @@ function isPublicV6(ip: string): boolean {
   if (allZero) return false; // ::
   if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return false; // ::1
   const first = g[0]!;
-  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) {
-    // IPv4-mapped: judge the embedded IPv4 address.
+  const ipv4Mapped = g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff;
+  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): on a DNS64 network every IPv4-only host,
+  // S3 included, resolves to one of these. The gateway forwards to the embedded IPv4 address.
+  const nat64WellKnown = first === 0x0064 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0);
+  if (ipv4Mapped || nat64WellKnown) {
+    // Judge the embedded IPv4 address.
     const v4 = `${g[6]! >> 8}.${g[6]! & 0xff}.${g[7]! >> 8}.${g[7]! & 0xff}`;
     return isPublicV4(v4);
   }
@@ -85,7 +89,7 @@ function isPublicV6(ip: string): boolean {
   if ((first & 0xffc0) === 0xfe80) return false; // fe80::/10 link-local
   if ((first & 0xff00) === 0xff00) return false; // multicast
   if (first === 0x2001 && g[1] === 0x0db8) return false; // documentation
-  if (first === 0x0064 && g[1] === 0xff9b) return false; // NAT64 well-known prefix: judge nothing, block
+  if (first === 0x0064 && g[1] === 0xff9b) return false; // local-use NAT64 64:ff9b:1::/48 (RFC 8215): operator-defined, block
   return true;
 }
 

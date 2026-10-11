@@ -393,6 +393,15 @@ describe("net guard", () => {
     expect(isPublicAddress("100.63.0.1")).toBe(true);
   });
 
+  it("judges NAT64 addresses by the IPv4 address they embed", () => {
+    // DNS64 answer for an S3 host: 64:ff9b::16.15.171.13
+    expect(isPublicAddress("64:ff9b::100f:ab0d")).toBe(true);
+    expect(isPublicAddress("64:ff9b::16.15.171.13")).toBe(true);
+    for (const ip of ["64:ff9b::a9fe:a9fe", "64:ff9b::7f00:1", "64:ff9b::10.0.0.1", "64:ff9b::192.168.1.1", "64:ff9b:1::100f:ab0d"]) {
+      expect(isPublicAddress(ip), ip).toBe(false);
+    }
+  });
+
   it("vets a target by scheme, hostname and every resolved address", async () => {
     const lookup = async (host: string) => (host === "mixed.example" ? ["93.184.216.34", "10.0.0.1"] : ["93.184.216.34"]);
     expect((await checkPublicTarget("https://example.com/a", lookup)).ok).toBe(true);
