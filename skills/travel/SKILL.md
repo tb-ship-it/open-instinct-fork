@@ -24,6 +24,17 @@ the fare and bags. Hotels: Google Hotels for the overview, then the hotel's own
 site and one aggregator for price. `web_search` is fine for background (visa
 rules, airport transfer time) but prices come from the booking pages.
 
+Without a desktop, use `browse_page` when you have it: it renders JavaScript
+pages in a cloud browser but cannot click or log in, so build the search into
+the URL. Flights:
+`https://www.google.com/travel/flights?q=Flights%20from%20LON%20to%20HEL%20on%202026-10-25%20through%202026-10-27`
+(airport or city codes, ISO dates; drop "through ..." for one-way). Then open
+the airline's fare page the same way if it shows prices without a login. Its
+daily quota is small: one search page and one or two fare pages per request.
+With no desktop and no `browse_page`, say you cannot see live prices and give
+the Google Flights link above for the owner's dates instead of guessing fares.
+You can search, compare and recommend this way, but booking needs the desktop.
+
 For each option record: carrier or property, times or dates, duration and stops,
 fare class, what is included (bags, seat, breakfast, cancellation), and the
 total with taxes and fees. Zoom on the total; sites hide fees until late.

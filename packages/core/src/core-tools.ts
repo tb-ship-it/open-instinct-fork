@@ -30,6 +30,8 @@ export interface CoreToolDeps {
   searchApiKey?: string;
   /** Composio's no-auth Google search, used when there is no Brave key. DuckDuckGo stays the fallback. */
   composioSearch?: { apiKey: string; userId: string };
+  /** Cloudflare Browser Rendering credentials. With them, browse_page renders JavaScript pages in a cloud browser. */
+  cloudflareBrowser?: { accountId: string; apiToken: string };
   /** The owner's workspace directory. create_pdf writes under it; without it the tool refuses. */
   workspaceDir?: string;
   /** Called after approval_settle resolves an approval, so the runtime can wake the conversation that was waiting. */
@@ -58,6 +60,7 @@ export function coreTools(deps: CoreToolDeps): RegisteredTool[] {
     auditTool(deps),
     webFetchTool(deps),
     webSearchTool(deps),
+    ...(deps.cloudflareBrowser ? [browsePageTool(deps, deps.cloudflareBrowser)] : []),
     createPdfTool(deps),
     imageGenerateTool(deps),
   ];
@@ -333,6 +336,62 @@ function webFetchTool({ fetchImpl, lookup }: CoreToolDeps): RegisteredTool {
       const final = hops.length > 0 ? ` (final: ${hops[hops.length - 1]})` : "";
       const head = `HTTP ${res.status} ${target.host}${final}\n`;
       return textResult(head + wrapUntrusted(body || "(empty page)", `web page ${new URL(hops[hops.length - 1] ?? target.toString()).host}`));
+    },
+  });
+}
+
+const BROWSE_TIMEOUT_MS = 60_000;
+
+/**
+ * A real browser without a desktop: Cloudflare Browser Rendering loads the page in headless
+ * Chromium, runs its JavaScript and returns Markdown. The free plan allows about ten minutes of
+ * browser time a day, so web_fetch stays the first choice for plain pages.
+ */
+function browsePageTool({ fetchImpl, lookup }: CoreToolDeps, cf: { accountId: string; apiToken: string }): RegisteredTool {
+  const doFetch = fetchImpl ?? fetch;
+  return defineTool({
+    name: "browse_page",
+    label: "Browse page",
+    description:
+      "Open a public URL in a real cloud browser that runs JavaScript, and return the rendered page as text (up to 20k characters). " +
+      "Use it when web_fetch returns an empty or useless page: flight and hotel search, shops, timetables, anything built with JavaScript. " +
+      "It cannot click, type or log in. Flights: open https://www.google.com/travel/flights?q=Flights%20from%20LON%20to%20HEL%20on%202026-10-25%20through%202026-10-27 " +
+      "(one-way: drop 'through ...'). The daily quota is small: prefer web_fetch for simple pages and do not browse in loops.",
+    parameters: Type.Object({
+      url: Type.String(),
+      wait_for: Type.Optional(Type.String({ description: "CSS selector to wait for before reading the page, when results load late." })),
+    }),
+    meta: { capabilities: ["web.read"], group: "web", describe: (a) => `browse ${argText(a, "url")}` },
+    execute: async ({ url, wait_for }, _ctx, signal) => {
+      // Cloudflare loads the page from its own network, but refuse private targets anyway, as web_fetch does.
+      const check = await checkPublicTarget(url, lookup);
+      if (!check.ok) return { content: [{ type: "text", text: `Cannot browse ${url}: ${check.reason}` }], isError: true };
+      const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(cf.accountId)}/browser-rendering/markdown`;
+      const body = {
+        url: check.target.url.toString(),
+        gotoOptions: { waitUntil: "networkidle2", timeout: 45_000 },
+        ...(wait_for ? { waitForSelector: { selector: wait_for, timeout: 15_000 } } : {}),
+        rejectResourceTypes: ["image", "media", "font"],
+      };
+      let res: Response;
+      try {
+        res = await doFetch(endpoint, {
+          method: "POST",
+          signal: signal ?? AbortSignal.timeout(BROWSE_TIMEOUT_MS),
+          headers: { authorization: `Bearer ${cf.apiToken}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        return { content: [{ type: "text", text: `The cloud browser could not be reached: ${(err as Error).message}` }], isError: true };
+      }
+      const data = (await res.json().catch(() => ({}))) as { success?: boolean; result?: unknown; errors?: Array<{ message?: string }> };
+      if (!res.ok || data.success === false || typeof data.result !== "string") {
+        const why = data.errors?.map((e) => e.message).filter(Boolean).join("; ") || `HTTP ${res.status}`;
+        const quota = res.status === 429 ? " The free daily browser quota may be used up; it resets at 00:00 UTC." : "";
+        return { content: [{ type: "text", text: `The cloud browser failed on ${url}: ${why}.${quota}` }], isError: true };
+      }
+      const text = clip(data.result.trim(), WEB_TEXT_CAP);
+      return textResult(wrapUntrusted(text || "(empty page)", `browsed page ${check.target.url.host}`));
     },
   });
 }

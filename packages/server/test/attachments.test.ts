@@ -147,6 +147,32 @@ describe("open_attachment", () => {
   });
 
   it("defaults to Groq and accepts GROQ_API_KEY", () => {
-    expect(transcribeConfig({ GROQ_API_KEY: "gsk_x" })).toEqual({ apiKey: "gsk_x", url: "https://api.groq.com/openai/v1", model: "whisper-large-v3-turbo" });
+    expect(transcribeConfig({ GROQ_API_KEY: "gsk_x" })).toEqual({ provider: "openai", apiKey: "gsk_x", url: "https://api.groq.com/openai/v1", model: "whisper-large-v3-turbo" });
+  });
+
+  it("uses Cloudflare Workers AI when only Cloudflare credentials are set, and an OpenAI-style key wins", () => {
+    const cf = { CLOUDFLARE_ACCOUNT_ID: "acc", CLOUDFLARE_API_TOKEN: "tok" };
+    expect(transcribeConfig(cf)).toEqual({ provider: "cloudflare", accountId: "acc", apiToken: "tok", model: "@cf/openai/whisper-large-v3-turbo" });
+    expect(transcribeConfig({ ...cf, INSTINCT_TRANSCRIBE_API_KEY: "k" }).provider).toBe("openai");
+    expect(transcribeConfig({}).provider).toBe("none");
+  });
+
+  it("transcribes through Cloudflare Workers AI with the audio as base64 JSON", async () => {
+    const { inbound } = setup();
+    const file = path.join(inbound, `${HASH}.ogg`);
+    writeFileSync(file, Buffer.from("OggS voice"));
+    let seen: { url: string; auth: string | null; audio: unknown } | undefined;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      seen = { url, auth: new Headers(init.headers).get("authorization"), audio: JSON.parse(String(init.body)).audio };
+      return new Response(JSON.stringify({ success: true, result: { text: " Rappelle-moi d'appeler Kris lundi. " } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const env = { CLOUDFLARE_ACCOUNT_ID: "acc", CLOUDFLARE_API_TOKEN: "tok" };
+    const out = await run(attachmentTool({ inboundDir: inbound, env, fetchImpl }), file);
+    expect(out.text).toContain("Voice note transcript:\nRappelle-moi d'appeler Kris lundi.");
+    expect(seen).toEqual({
+      url: "https://api.cloudflare.com/client/v4/accounts/acc/ai/run/@cf/openai/whisper-large-v3-turbo",
+      auth: "Bearer tok",
+      audio: Buffer.from("OggS voice").toString("base64"),
+    });
   });
 });

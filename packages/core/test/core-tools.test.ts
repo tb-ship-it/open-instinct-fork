@@ -24,7 +24,7 @@ const stubLookup = async (host: string): Promise<string[]> => {
   return ["93.184.216.34"];
 };
 
-function setup(opts: { fetchImpl?: typeof fetch; searchApiKey?: string; composioSearch?: CoreToolDeps["composioSearch"]; lookup?: (host: string) => Promise<string[]>; onApprovalSettled?: CoreToolDeps["onApprovalSettled"]; images?: CoreToolDeps["images"]; workspaceDir?: string } = {}) {
+function setup(opts: { fetchImpl?: typeof fetch; searchApiKey?: string; composioSearch?: CoreToolDeps["composioSearch"]; cloudflareBrowser?: CoreToolDeps["cloudflareBrowser"]; lookup?: (host: string) => Promise<string[]>; onApprovalSettled?: CoreToolDeps["onApprovalSettled"]; images?: CoreToolDeps["images"]; workspaceDir?: string } = {}) {
   const state = tempState();
   const sent: Array<{ msg: OutboundMessage; principal: Principal }> = [];
   const outbox: Outbox = { send: async (msg, ctx) => void sent.push({ msg, principal: ctx.principal }) };
@@ -394,6 +394,33 @@ describe("web tools", () => {
     expect(body).toEqual({ user_id: "bobby", arguments: { query: "LHR HEL" } });
     composioStatus = 500;
     expect(text(await run("web_search", { query: "LHR HEL" }))).toContain("1. From DDG");
+  });
+
+  it("browse_page exists only with Cloudflare credentials, and renders through Browser Rendering", async () => {
+    expect(setup().registry.all().map((t) => t.spec.name)).not.toContain("browse_page");
+    let seen: { url: string; auth: string; body: Record<string, unknown> } | undefined;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      seen = { url, auth: (init?.headers as Record<string, string>).authorization ?? "", body: JSON.parse(String(init?.body)) };
+      return new Response(JSON.stringify({ success: true, result: "# Flights\n\nFinnair 07:25 £143" }), { status: 200 });
+    }) as typeof fetch;
+    const { run, text, registry } = setup({ fetchImpl, cloudflareBrowser: { accountId: "acc", apiToken: "tok" } });
+    expect(registry.meta("browse_page")?.capabilities).toEqual(["web.read"]);
+    const out = text(await run("browse_page", { url: "https://www.google.com/travel/flights?q=LON%20HEL", wait_for: "[role=main]" }));
+    expect(out).toContain("Finnair 07:25 £143");
+    expect(out).toContain('<untrusted source="browsed page www.google.com">');
+    expect(seen?.url).toBe("https://api.cloudflare.com/client/v4/accounts/acc/browser-rendering/markdown");
+    expect(seen?.auth).toBe("Bearer tok");
+    expect(seen?.body).toMatchObject({ url: "https://www.google.com/travel/flights?q=LON%20HEL", waitForSelector: { selector: "[role=main]" } });
+  });
+
+  it("browse_page refuses private targets and explains a used-up quota", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({ success: false, errors: [{ message: "Rate limit exceeded" }] }), { status: 429 })) as typeof fetch;
+    const { run, text } = setup({ fetchImpl, cloudflareBrowser: { accountId: "acc", apiToken: "tok" } });
+    expect(text(await run("browse_page", { url: "http://127.0.0.1/admin" }))).toContain("Cannot browse");
+    const out = text(await run("browse_page", { url: "https://example.com/" }));
+    expect(out).toContain("Rate limit exceeded");
+    expect(out).toContain("quota");
   });
 
   it("web_search uses Brave when a key is set and caps at 8 results", async () => {

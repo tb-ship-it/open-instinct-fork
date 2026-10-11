@@ -38,6 +38,7 @@ const AUDIO_MAX_BYTES = 25 * 1024 * 1024;
 
 export const DEFAULT_TRANSCRIBE_URL = "https://api.groq.com/openai/v1";
 export const DEFAULT_TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
+export const DEFAULT_CLOUDFLARE_TRANSCRIBE_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
 export interface AttachmentToolOptions {
   /** Where the hydrator saves inbound attachments (workspace/inbound). */
@@ -162,13 +163,26 @@ function runAudioToMp3(file: string): Promise<Buffer> {
   });
 }
 
-export function transcribeConfig(env: NodeJS.ProcessEnv): { apiKey?: string; url: string; model: string } {
-  const apiKey = env.INSTINCT_TRANSCRIBE_API_KEY?.trim() || env.GROQ_API_KEY?.trim() || undefined;
-  return {
-    ...(apiKey ? { apiKey } : {}),
-    url: (env.INSTINCT_TRANSCRIBE_URL?.trim() || DEFAULT_TRANSCRIBE_URL).replace(/\/+$/, ""),
-    model: env.INSTINCT_TRANSCRIBE_MODEL?.trim() || DEFAULT_TRANSCRIBE_MODEL,
-  };
+export type TranscribeConfig =
+  | { provider: "openai"; apiKey: string; url: string; model: string }
+  | { provider: "cloudflare"; accountId: string; apiToken: string; model: string }
+  | { provider: "none" };
+
+/**
+ * An OpenAI-compatible key (INSTINCT_TRANSCRIBE_API_KEY or GROQ_API_KEY) wins. Otherwise
+ * Cloudflare Workers AI, whose free daily allowance covers a few hours of Whisper a day.
+ */
+export function transcribeConfig(env: NodeJS.ProcessEnv): TranscribeConfig {
+  const model = env.INSTINCT_TRANSCRIBE_MODEL?.trim();
+  const apiKey = env.INSTINCT_TRANSCRIBE_API_KEY?.trim() || env.GROQ_API_KEY?.trim();
+  if (apiKey) {
+    const url = (env.INSTINCT_TRANSCRIBE_URL?.trim() || DEFAULT_TRANSCRIBE_URL).replace(/\/+$/, "");
+    return { provider: "openai", apiKey, url, model: model || DEFAULT_TRANSCRIBE_MODEL };
+  }
+  const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const apiToken = env.CLOUDFLARE_API_TOKEN?.trim();
+  if (accountId && apiToken) return { provider: "cloudflare", accountId, apiToken, model: model || DEFAULT_CLOUDFLARE_TRANSCRIBE_MODEL };
+  return { provider: "none" };
 }
 
 async function transcribe(
@@ -180,8 +194,11 @@ async function transcribe(
   signal?: AbortSignal,
 ): Promise<ToolResultLike> {
   const cfg = transcribeConfig(env);
-  if (!cfg.apiKey) {
-    return fail("Voice notes cannot be transcribed yet: the person running this agent needs to set INSTINCT_TRANSCRIBE_API_KEY (a free Groq key works) and restart. Tell the sender in one sentence and ask them to type it.");
+  if (cfg.provider === "none") {
+    return fail(
+      "Voice notes cannot be transcribed yet: the person running this agent needs to set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (free), " +
+        "or INSTINCT_TRANSCRIBE_API_KEY for an OpenAI-compatible service, and restart. Tell the sender in one sentence and ask them to type it.",
+    );
   }
   let bytes: Buffer;
   let uploadExt = ext;
@@ -198,27 +215,35 @@ async function transcribe(
     }
   }
   if (bytes.length > AUDIO_MAX_BYTES) return fail("The voice note is over 25 MB, too long to transcribe in one go.");
-  const form = new FormData();
-  form.append("file", new Blob([bytes]), `voice${uploadExt}`);
-  form.append("model", cfg.model);
-  form.append("response_format", "json");
+  const timeout = signal ?? AbortSignal.timeout(120_000);
   let res: Response;
   try {
-    res = await fetchImpl(`${cfg.url}/audio/transcriptions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${cfg.apiKey}` },
-      body: form,
-      signal: signal ?? AbortSignal.timeout(120_000),
-    });
+    if (cfg.provider === "openai") {
+      const form = new FormData();
+      form.append("file", new Blob([bytes]), `voice${uploadExt}`);
+      form.append("model", cfg.model);
+      form.append("response_format", "json");
+      res = await fetchImpl(`${cfg.url}/audio/transcriptions`, { method: "POST", headers: { authorization: `Bearer ${cfg.apiKey}` }, body: form, signal: timeout });
+    } else {
+      // Workers AI takes the audio as base64 in JSON and wraps the answer in { success, result }.
+      res = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(cfg.accountId)}/ai/run/${cfg.model}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${cfg.apiToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ audio: bytes.toString("base64") }),
+        signal: timeout,
+      });
+    }
   } catch (err) {
     return fail(`The transcription service could not be reached: ${(err as Error).message}`);
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => "")).slice(0, 300);
-    return fail(`Transcription failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+    const quota = cfg.provider === "cloudflare" && res.status === 429 ? " The free daily allowance may be used up; it resets at 00:00 UTC." : "";
+    return fail(`Transcription failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}${quota}`);
   }
-  const body = (await res.json().catch(() => ({}))) as { text?: unknown };
-  const text = typeof body.text === "string" ? body.text.trim() : "";
+  const body = (await res.json().catch(() => ({}))) as { text?: unknown; result?: { text?: unknown } };
+  const raw = cfg.provider === "cloudflare" ? body.result?.text : body.text;
+  const text = typeof raw === "string" ? raw.trim() : "";
   return textResult(text ? `Voice note transcript:\n${text}` : "The voice note was transcribed but contained no speech.");
 }
 
