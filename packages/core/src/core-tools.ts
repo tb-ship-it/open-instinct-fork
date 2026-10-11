@@ -341,6 +341,13 @@ function webFetchTool({ fetchImpl, lookup }: CoreToolDeps): RegisteredTool {
 }
 
 const BROWSE_TIMEOUT_MS = 60_000;
+/** Google's "reject all" consent choice (SOCS), so pages render instead of "Before you continue". */
+const GOOGLE_CONSENT_COOKIE = (host: string) => ({
+  name: "SOCS",
+  value: "CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg",
+  domain: `.${host.replace(/^www\./, "")}`,
+  path: "/",
+});
 
 /**
  * A real browser without a desktop: Cloudflare Browser Rendering loads the page in headless
@@ -354,9 +361,9 @@ function browsePageTool({ fetchImpl, lookup }: CoreToolDeps, cf: { accountId: st
     label: "Browse page",
     description:
       "Open a public URL in a real cloud browser that runs JavaScript, and return the rendered page as text (up to 20k characters). " +
-      "Use it when web_fetch returns an empty or useless page: flight and hotel search, shops, timetables, anything built with JavaScript. " +
-      "It cannot click, type or log in. Flights: open https://www.google.com/travel/flights?q=Flights%20from%20LON%20to%20HEL%20on%202026-10-25%20through%202026-10-27 " +
-      "(one-way: drop 'through ...'). The daily quota is small: prefer web_fetch for simple pages and do not browse in loops.",
+      "Use it when web_fetch returns an empty or useless page: shops, timetables, hotel and restaurant pages, anything built with JavaScript. " +
+      "It cannot click, type or log in. Google Flights, Skyscanner and Kayak refuse it, so do not use it for flight search. " +
+      "The daily quota is small: prefer web_fetch for simple pages and do not browse in loops.",
     parameters: Type.Object({
       url: Type.String(),
       wait_for: Type.Optional(Type.String({ description: "CSS selector to wait for before reading the page, when results load late." })),
@@ -371,6 +378,8 @@ function browsePageTool({ fetchImpl, lookup }: CoreToolDeps, cf: { accountId: st
         url: check.target.url.toString(),
         gotoOptions: { waitUntil: "networkidle2", timeout: 45_000 },
         ...(wait_for ? { waitForSelector: { selector: wait_for, timeout: 15_000 } } : {}),
+        // Cloudflare browses from EU addresses, where Google answers with its cookie consent page.
+        ...(/(^|\.)google\.[a-z.]+$/.test(check.target.url.hostname) ? { cookies: [GOOGLE_CONSENT_COOKIE(check.target.url.hostname)] } : {}),
         rejectResourceTypes: ["image", "media", "font"],
       };
       let res: Response;

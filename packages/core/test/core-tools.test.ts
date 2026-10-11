@@ -412,6 +412,7 @@ describe("web tools", () => {
     expect(seen?.url).toBe("https://api.cloudflare.com/client/v4/accounts/acc/browser-rendering/markdown");
     expect(seen?.auth).toBe("Bearer tok");
     expect(seen?.body).toMatchObject({ url: "https://www.google.com/travel/flights?q=LON%20HEL", waitForSelector: { selector: "[role=main]" } });
+    expect(seen?.body.cookies).toEqual([expect.objectContaining({ name: "SOCS", domain: ".google.com" })]);
   });
 
   it("browse_page refuses private targets and explains a used-up quota", async () => {
