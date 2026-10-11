@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import type { AgentIdentity } from "@inkbox/sdk";
 import type { InboundMessage } from "@open-instinct/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -105,6 +105,20 @@ describe("email and media hydration", () => {
     expect(dirname(file)).toBe(mediaDir);
     expect(await readFile(file, "utf8")).toBe("image bytes");
     expect(fetchImpl).toHaveBeenCalledWith(url, expect.objectContaining({ headers: { accept: "*/*" }, redirect: "manual" }));
+  });
+
+  it("names phone voice notes from their content type, since they carry no filename", async () => {
+    const mediaDir = await mkdtemp(join(tmpdir(), "instinct-media-"));
+    dirs.push(mediaDir);
+    const fetchImpl = vi.fn(async () => new Response("audio bytes")) as unknown as typeof fetch;
+    const { hydrator } = harness({ mediaDir, fetchImpl, lookup: async () => ["8.8.8.8"] });
+    const attachments = [
+      { mimeType: "audio/mp4", url: "https://media.example.test/a" },
+      { mimeType: "audio/AMR", url: "https://media.example.test/b" },
+      { mimeType: "audio/ogg; codecs=opus", url: "https://media.example.test/c" },
+    ];
+    const msg = await hydrator.hydrate({ ...email(), meta: {}, attachments });
+    expect(msg.attachments!.map((a) => extname(a.path!))).toEqual([".m4a", ".amr", ".ogg"]);
   });
 
   it("keeps a visible fallback when media is too large or points to a local host", async () => {

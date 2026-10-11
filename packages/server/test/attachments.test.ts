@@ -90,6 +90,35 @@ describe("open_attachment", () => {
     expect(seen).toEqual({ url: "https://api.groq.com/openai/v1/audio/transcriptions", auth: "Bearer gsk_test", model: "whisper-large-v3-turbo" });
   });
 
+  it("converts audio the service refuses (AMR) to MP3 before uploading", async () => {
+    const { inbound } = setup();
+    const file = path.join(inbound, `${HASH}.amr`);
+    writeFileSync(file, Buffer.from("#!AMR\n"));
+    let converted: string | undefined;
+    let uploaded: string | undefined;
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      uploaded = ((init.body as FormData).get("file") as File).name;
+      return new Response(JSON.stringify({ text: "Book the train to Paris." }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const audioToMp3 = async (f: string) => ((converted = f), Buffer.from("mp3 bytes"));
+    const tool = attachmentTool({ inboundDir: inbound, env: { INSTINCT_TRANSCRIBE_API_KEY: "k" }, fetchImpl, audioToMp3 });
+    const out = await run(tool, file);
+    expect(out.text).toContain("Book the train to Paris.");
+    expect(converted).toBe(file);
+    expect(uploaded).toBe("voice.mp3");
+  });
+
+  it("says how to install ffmpeg when a voice note needs converting and it is missing", async () => {
+    const { inbound } = setup();
+    const file = path.join(inbound, `${HASH}.3gp`);
+    writeFileSync(file, Buffer.from([0]));
+    const missing = Object.assign(new Error("spawn ffmpeg ENOENT"), { code: "ENOENT" });
+    const tool = attachmentTool({ inboundDir: inbound, env: { INSTINCT_TRANSCRIBE_API_KEY: "k" }, audioToMp3: async () => Promise.reject(missing) });
+    const out = await run(tool, file);
+    expect(out.isError).toBe(true);
+    expect(out.text).toContain("ffmpeg");
+  });
+
   it("explains what is missing when no transcription key is set", async () => {
     const { inbound } = setup();
     const file = path.join(inbound, `${HASH}.ogg`);

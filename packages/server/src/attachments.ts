@@ -30,8 +30,8 @@ import type { RegisteredTool, ToolContext, ToolResultLike } from "@open-instinct
 const HASHED_NAME = /^[0-9a-f]{64}\.[A-Za-z0-9]{1,8}$/;
 const IMAGE_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"]);
 const TEXT_EXT = new Set([".txt", ".csv", ".md", ".json", ".html", ".htm", ".ics", ".vcf", ".xml", ".eml"]);
-const AUDIO_EXT = new Set([".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".ogg", ".oga", ".opus", ".wav", ".webm", ".flac", ".aac", ".amr", ".3gp"]);
-/** What OpenAI-compatible transcription endpoints (Groq, OpenAI) accept. Others need converting first. */
+const AUDIO_EXT = new Set([".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".ogg", ".oga", ".opus", ".wav", ".webm", ".flac", ".aac", ".amr", ".3gp", ".caf"]);
+/** What OpenAI-compatible transcription endpoints (Groq, OpenAI) accept. Others are converted to MP3 with ffmpeg first. */
 const TRANSCRIBABLE_EXT = new Set([".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".ogg", ".oga", ".opus", ".wav", ".webm", ".flac"]);
 const PDF_TEXT_CAP = 40_000;
 const AUDIO_MAX_BYTES = 25 * 1024 * 1024;
@@ -46,6 +46,8 @@ export interface AttachmentToolOptions {
   fetchImpl?: typeof fetch;
   /** Test seam: extract text from a PDF. Default runs `pdftotext -layout <file> -`. */
   pdfToText?: (file: string) => Promise<string>;
+  /** Test seam: convert audio the transcription service refuses (AMR, 3GP, CAF) to MP3. Default runs ffmpeg. */
+  audioToMp3?: (file: string) => Promise<Buffer>;
 }
 
 const PARAMS = Type.Object({
@@ -56,6 +58,7 @@ export function attachmentTool(opts: AttachmentToolOptions): RegisteredTool {
   const env = opts.env ?? process.env;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const pdfToText = opts.pdfToText ?? runPdfToText;
+  const audioToMp3 = opts.audioToMp3 ?? runAudioToMp3;
   return defineTool({
     name: "open_attachment",
     label: "Open attachment",
@@ -79,7 +82,7 @@ export function attachmentTool(opts: AttachmentToolOptions): RegisteredTool {
       const ext = path.extname(file).toLowerCase();
       if (IMAGE_EXT.has(ext) || TEXT_EXT.has(ext)) return readWithPi(opts.inboundDir, file, signal);
       if (ext === ".pdf") return readPdf(file, pdfToText);
-      if (AUDIO_EXT.has(ext)) return transcribe(file, ext, env, fetchImpl, signal);
+      if (AUDIO_EXT.has(ext)) return transcribe(file, ext, env, fetchImpl, audioToMp3, signal);
       return fail(`${ext || "This file type"} cannot be opened here. Ask for it as a PDF, an image or plain text.`);
     },
   });
@@ -144,6 +147,21 @@ function runPdfToText(file: string): Promise<string> {
   });
 }
 
+/** Mono 16 kHz MP3 on stdout: what speech-to-text models use anyway, and small enough to upload. */
+function runAudioToMp3(file: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "ffmpeg",
+      ["-hide_banner", "-loglevel", "error", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", "-f", "mp3", "pipe:1"],
+      { encoding: "buffer", maxBuffer: AUDIO_MAX_BYTES + 1024 * 1024, timeout: 120_000 },
+      (err, stdout, stderr) => {
+        if (err) reject(Object.assign(err, { message: stderr.toString().trim().slice(0, 300) || err.message }));
+        else resolve(stdout);
+      },
+    );
+  });
+}
+
 export function transcribeConfig(env: NodeJS.ProcessEnv): { apiKey?: string; url: string; model: string } {
   const apiKey = env.INSTINCT_TRANSCRIBE_API_KEY?.trim() || env.GROQ_API_KEY?.trim() || undefined;
   return {
@@ -153,16 +171,35 @@ export function transcribeConfig(env: NodeJS.ProcessEnv): { apiKey?: string; url
   };
 }
 
-async function transcribe(file: string, ext: string, env: NodeJS.ProcessEnv, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<ToolResultLike> {
+async function transcribe(
+  file: string,
+  ext: string,
+  env: NodeJS.ProcessEnv,
+  fetchImpl: typeof fetch,
+  audioToMp3: (file: string) => Promise<Buffer>,
+  signal?: AbortSignal,
+): Promise<ToolResultLike> {
   const cfg = transcribeConfig(env);
   if (!cfg.apiKey) {
     return fail("Voice notes cannot be transcribed yet: the person running this agent needs to set INSTINCT_TRANSCRIBE_API_KEY (a free Groq key works) and restart. Tell the sender in one sentence and ask them to type it.");
   }
-  if (!TRANSCRIBABLE_EXT.has(ext)) return fail(`${ext} audio is not supported by the transcription service. Ask for an .m4a, .mp3 or .ogg voice note instead.`);
-  const bytes = readFileSync(file);
+  let bytes: Buffer;
+  let uploadExt = ext;
+  if (TRANSCRIBABLE_EXT.has(ext)) {
+    bytes = readFileSync(file);
+  } else {
+    // Android voice notes are often AMR or 3GP and iPhone ones CAF; the service takes none of them.
+    try {
+      bytes = await audioToMp3(file);
+      uploadExt = ".mp3";
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return fail(`Converting ${ext} voice notes needs ffmpeg on this machine: sudo apt install -y ffmpeg`);
+      return fail(`The ${ext} voice note could not be converted for transcription: ${(err as Error).message}`);
+    }
+  }
   if (bytes.length > AUDIO_MAX_BYTES) return fail("The voice note is over 25 MB, too long to transcribe in one go.");
   const form = new FormData();
-  form.append("file", new Blob([bytes]), `voice${ext}`);
+  form.append("file", new Blob([bytes]), `voice${uploadExt}`);
   form.append("model", cfg.model);
   form.append("response_format", "json");
   let res: Response;

@@ -136,7 +136,14 @@ async function boundedBytes(res: Response, cap: number): Promise<Uint8Array> {
 }
 
 function extension(mimeType: string | undefined, name: string | undefined): string {
-  const known: Record<string, string> = { "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf", "text/plain": ".txt" };
-  if (mimeType && known[mimeType]) return known[mimeType];
+  const known: Record<string, string> = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf", "text/plain": ".txt",
+    // Phone media arrives without a filename, so voice notes are named from their type alone.
+    "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/m4a": ".m4a", "audio/aac": ".aac", "audio/mpeg": ".mp3", "audio/mp3": ".mp3",
+    "audio/ogg": ".ogg", "audio/opus": ".opus", "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/webm": ".webm", "audio/flac": ".flac",
+    "audio/amr": ".amr", "audio/3gpp": ".3gp", "audio/x-caf": ".caf",
+  };
+  const type = mimeType?.split(";")[0]?.trim().toLowerCase();
+  if (type && known[type]) return known[type];
   return name?.match(/\.[a-zA-Z0-9]{1,8}$/)?.[0] ?? ".bin";
 }
