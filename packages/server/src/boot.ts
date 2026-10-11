@@ -188,6 +188,7 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
       ...(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN
         ? { cloudflareBrowser: { accountId: env.CLOUDFLARE_ACCOUNT_ID, apiToken: env.CLOUDFLARE_API_TOKEN } }
         : {}),
+      ...(env.SERPAPI_API_KEY ? { serpApiKey: env.SERPAPI_API_KEY } : {}),
     }),
   );
 

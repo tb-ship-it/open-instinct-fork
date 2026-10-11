@@ -32,6 +32,8 @@ export interface CoreToolDeps {
   composioSearch?: { apiKey: string; userId: string };
   /** Cloudflare Browser Rendering credentials. With them, browse_page renders JavaScript pages in a cloud browser. */
   cloudflareBrowser?: { accountId: string; apiToken: string };
+  /** SerpApi key. With it, search_flights reads live Google Flights fares (free plan: 250 searches a month). */
+  serpApiKey?: string;
   /** The owner's workspace directory. create_pdf writes under it; without it the tool refuses. */
   workspaceDir?: string;
   /** Called after approval_settle resolves an approval, so the runtime can wake the conversation that was waiting. */
@@ -61,6 +63,7 @@ export function coreTools(deps: CoreToolDeps): RegisteredTool[] {
     webFetchTool(deps),
     webSearchTool(deps),
     ...(deps.cloudflareBrowser ? [browsePageTool(deps, deps.cloudflareBrowser)] : []),
+    ...(deps.serpApiKey ? [searchFlightsTool(deps, deps.serpApiKey)] : []),
     createPdfTool(deps),
     imageGenerateTool(deps),
   ];
@@ -403,6 +406,114 @@ function browsePageTool({ fetchImpl, lookup }: CoreToolDeps, cf: { accountId: st
       return textResult(wrapUntrusted(text || "(empty page)", `browsed page ${check.target.url.host}`));
     },
   });
+}
+
+interface SerpFlightLeg {
+  departure_airport?: { id?: string; time?: string };
+  arrival_airport?: { id?: string; time?: string };
+  airline?: string;
+  flight_number?: string;
+  duration?: number;
+}
+interface SerpFlightOption {
+  flights?: SerpFlightLeg[];
+  layovers?: Array<{ id?: string; duration?: number }>;
+  total_duration?: number;
+  price?: number;
+  departure_token?: string;
+}
+
+const FLIGHT_OPTIONS_SHOWN = 6;
+
+/**
+ * Live Google Flights fares through SerpApi's google_flights engine. Google Flights refuses
+ * headless browsers, so this is how an agent without a desktop sees real prices.
+ */
+function searchFlightsTool({ fetchImpl }: CoreToolDeps, apiKey: string): RegisteredTool {
+  const doFetch = fetchImpl ?? fetch;
+  return defineTool({
+    name: "search_flights",
+    label: "Search flights",
+    description:
+      "Live Google Flights fares (prices include taxes). Airports are IATA codes, several joined by commas (London: LHR,LGW,STN,LTN,LCY). " +
+      "Dates are YYYY-MM-DD; give return_date for a round trip. Round-trip prices cover both legs; to see return flights for one outbound option, " +
+      "call again with the same search and its departure_token. Each call uses one search from a small monthly quota.",
+    parameters: Type.Object({
+      from: Type.String({ description: "Departure airport codes, e.g. LHR,LGW" }),
+      to: Type.String({ description: "Arrival airport codes, e.g. HEL" }),
+      date: Type.String({ description: "Outbound date, YYYY-MM-DD" }),
+      return_date: Type.Optional(Type.String({ description: "Return date, YYYY-MM-DD; omit for one-way" })),
+      adults: Type.Optional(Type.Integer({ minimum: 1, maximum: 9 })),
+      cabin: Type.Optional(Type.Union([Type.Literal("economy"), Type.Literal("premium_economy"), Type.Literal("business"), Type.Literal("first")])),
+      nonstop: Type.Optional(Type.Boolean()),
+      currency: Type.Optional(Type.String({ description: "ISO currency, default GBP" })),
+      departure_token: Type.Optional(Type.String({ description: "From an earlier result, to list the return flights for that outbound option" })),
+    }),
+    meta: { capabilities: ["web.read"], group: "web", describe: (a) => `flights ${argText(a, "from")} to ${argText(a, "to")} ${argText(a, "date")}` },
+    execute: async (args, _ctx, signal) => {
+      const cabins = { economy: "1", premium_economy: "2", business: "3", first: "4" } as const;
+      const url = new URL("https://serpapi.com/search.json");
+      const params: Record<string, string | undefined> = {
+        engine: "google_flights",
+        departure_id: args.from.replace(/\s+/g, "").toUpperCase(),
+        arrival_id: args.to.replace(/\s+/g, "").toUpperCase(),
+        outbound_date: args.date,
+        return_date: args.return_date,
+        type: args.return_date ? "1" : "2",
+        adults: args.adults ? String(args.adults) : undefined,
+        travel_class: args.cabin ? cabins[args.cabin] : undefined,
+        stops: args.nonstop ? "1" : undefined,
+        currency: (args.currency ?? "GBP").toUpperCase(),
+        hl: "en",
+        gl: "uk",
+        departure_token: args.departure_token,
+        api_key: apiKey,
+      };
+      for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
+      let res: Response;
+      try {
+        res = await doFetch(url.toString(), { signal: signal ?? AbortSignal.timeout(BROWSE_TIMEOUT_MS), headers: { accept: "application/json" } });
+      } catch (err) {
+        return { content: [{ type: "text", text: `Flight search could not be reached: ${(err as Error).message}` }], isError: true };
+      }
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        best_flights?: SerpFlightOption[];
+        other_flights?: SerpFlightOption[];
+        price_insights?: { lowest_price?: number; price_level?: string; typical_price_range?: number[] };
+        search_metadata?: { google_flights_url?: string };
+      };
+      if (!res.ok || data.error) {
+        const quota = res.status === 429 ? " The monthly search quota may be used up." : "";
+        return { content: [{ type: "text", text: `Flight search failed: ${data.error ?? `HTTP ${res.status}`}.${quota}` }], isError: true };
+      }
+      const currency = params.currency!;
+      const options = [...(data.best_flights ?? []), ...(data.other_flights ?? [])].slice(0, FLIGHT_OPTIONS_SHOWN);
+      if (options.length === 0) return textResult(`No flights found from ${params.departure_id} to ${params.arrival_id} on ${args.date}.`);
+      const lines = options.map((o, i) => `${i + 1}. ${describeFlightOption(o, currency)}`);
+      const insight = data.price_insights;
+      const head = [
+        args.departure_token ? "Return flights for the chosen outbound:" : `Flights ${params.departure_id} to ${params.arrival_id}, ${args.date}${args.return_date ? ` returning ${args.return_date} (round-trip prices)` : " (one-way)"}:`,
+        insight?.price_level ? `Prices are ${insight.price_level} for this route${insight.typical_price_range?.length === 2 ? ` (typical ${currency} ${insight.typical_price_range[0]}-${insight.typical_price_range[1]})` : ""}.` : "",
+      ].filter(Boolean).join("\n");
+      const link = data.search_metadata?.google_flights_url ? `\nGoogle Flights: ${data.search_metadata.google_flights_url}` : "";
+      return textResult(wrapUntrusted(`${head}\n${lines.join("\n")}${link}`, "Google Flights results"));
+    },
+  });
+}
+
+function describeFlightOption(o: SerpFlightOption, currency: string): string {
+  const legs = o.flights ?? [];
+  const first = legs[0];
+  const last = legs[legs.length - 1];
+  const hm = (min?: number) => (typeof min === "number" ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}` : "?");
+  const time = (t?: string) => t?.split(" ")[1] ?? t ?? "?";
+  const airlines = [...new Set(legs.map((l) => l.airline).filter(Boolean))].join(" + ");
+  const numbers = legs.map((l) => l.flight_number).filter(Boolean).join(", ");
+  const stops = o.layovers?.length ? `${o.layovers.length} stop${o.layovers.length > 1 ? "s" : ""} (${o.layovers.map((l) => `${l.id} ${hm(l.duration)}`).join(", ")})` : "nonstop";
+  const price = typeof o.price === "number" ? `${currency} ${o.price}` : "price n/a";
+  const token = o.departure_token ? `\n   departure_token: ${o.departure_token}` : "";
+  return `${price} · ${airlines}${numbers ? ` ${numbers}` : ""} · ${first?.departure_airport?.id} ${time(first?.departure_airport?.time)} → ${last?.arrival_airport?.id} ${time(last?.arrival_airport?.time)} · ${hm(o.total_duration)} · ${stops}${token}`;
 }
 
 interface FetchPublicOptions {

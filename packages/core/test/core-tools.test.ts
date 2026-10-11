@@ -24,7 +24,7 @@ const stubLookup = async (host: string): Promise<string[]> => {
   return ["93.184.216.34"];
 };
 
-function setup(opts: { fetchImpl?: typeof fetch; searchApiKey?: string; composioSearch?: CoreToolDeps["composioSearch"]; cloudflareBrowser?: CoreToolDeps["cloudflareBrowser"]; lookup?: (host: string) => Promise<string[]>; onApprovalSettled?: CoreToolDeps["onApprovalSettled"]; images?: CoreToolDeps["images"]; workspaceDir?: string } = {}) {
+function setup(opts: { fetchImpl?: typeof fetch; searchApiKey?: string; composioSearch?: CoreToolDeps["composioSearch"]; cloudflareBrowser?: CoreToolDeps["cloudflareBrowser"]; serpApiKey?: string; lookup?: (host: string) => Promise<string[]>; onApprovalSettled?: CoreToolDeps["onApprovalSettled"]; images?: CoreToolDeps["images"]; workspaceDir?: string } = {}) {
   const state = tempState();
   const sent: Array<{ msg: OutboundMessage; principal: Principal }> = [];
   const outbox: Outbox = { send: async (msg, ctx) => void sent.push({ msg, principal: ctx.principal }) };
@@ -422,6 +422,32 @@ describe("web tools", () => {
     const out = text(await run("browse_page", { url: "https://example.com/" }));
     expect(out).toContain("Rate limit exceeded");
     expect(out).toContain("quota");
+  });
+
+  it("search_flights exists only with a SerpApi key and lists Google Flights options with totals", async () => {
+    expect(setup().registry.all().map((t) => t.spec.name)).not.toContain("search_flights");
+    let seen: URL | undefined;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      seen = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+      const leg = (from: string, dep: string, to: string, arr: string, no: string, airline = "Finnair") => ({
+        departure_airport: { id: from, time: `2026-10-25 ${dep}` }, arrival_airport: { id: to, time: `2026-10-25 ${arr}` }, airline, flight_number: no, duration: 175,
+      });
+      return new Response(JSON.stringify({
+        best_flights: [{ flights: [leg("LHR", "18:35", "HEL", "23:30", "AY 1340")], total_duration: 175, price: 238, departure_token: "tok1" }],
+        other_flights: [{ flights: [leg("LGW", "17:05", "ARN", "20:20", "DY 4304", "Norwegian"), leg("ARN", "21:40", "HEL", "23:35", "DY 5320", "Norwegian")], layovers: [{ id: "ARN", duration: 80 }], total_duration: 330, price: 161 }],
+        price_insights: { price_level: "typical", typical_price_range: [150, 320] },
+        search_metadata: { google_flights_url: "https://www.google.com/travel/flights?tfs=x" },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const { run, text } = setup({ fetchImpl, serpApiKey: "serp" });
+    const out = text(await run("search_flights", { from: "lhr, lgw", to: "HEL", date: "2026-10-25", return_date: "2026-10-27", nonstop: false }));
+    expect(Object.fromEntries(seen!.searchParams)).toMatchObject({
+      engine: "google_flights", departure_id: "LHR,LGW", arrival_id: "HEL", outbound_date: "2026-10-25", return_date: "2026-10-27", type: "1", currency: "GBP", api_key: "serp",
+    });
+    expect(out).toContain("1. GBP 238 · Finnair AY 1340 · LHR 18:35 → HEL 23:30 · 2h55 · nonstop\n   departure_token: tok1");
+    expect(out).toContain("2. GBP 161 · Norwegian DY 4304, DY 5320 · LGW 17:05 → HEL 23:35 · 5h30 · 1 stop (ARN 1h20)");
+    expect(out).toContain("Prices are typical for this route (typical GBP 150-320).");
+    expect(out).toContain("Google Flights: https://www.google.com/travel/flights?tfs=x");
   });
 
   it("web_search uses Brave when a key is set and caps at 8 results", async () => {
