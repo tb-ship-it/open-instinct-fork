@@ -28,6 +28,8 @@ export interface CoreToolDeps {
   /** DNS lookup used to vet web_fetch targets; tests inject a stub. */
   lookup?: Lookup;
   searchApiKey?: string;
+  /** Composio's no-auth Google search, used when there is no Brave key. DuckDuckGo stays the fallback. */
+  composioSearch?: { apiKey: string; userId: string };
   /** The owner's workspace directory. create_pdf writes under it; without it the tool refuses. */
   workspaceDir?: string;
   /** Called after approval_settle resolves an approval, so the runtime can wake the conversation that was waiting. */
@@ -415,7 +417,7 @@ interface SearchHit {
   snippet: string;
 }
 
-function webSearchTool({ fetchImpl, searchApiKey }: CoreToolDeps): RegisteredTool {
+function webSearchTool({ fetchImpl, searchApiKey, composioSearch }: CoreToolDeps): RegisteredTool {
   const doFetch = fetchImpl ?? fetch;
   return defineTool({
     name: "web_search",
@@ -424,7 +426,10 @@ function webSearchTool({ fetchImpl, searchApiKey }: CoreToolDeps): RegisteredToo
     parameters: Type.Object({ query: Type.String() }),
     meta: { capabilities: ["web.read"], group: "web", describe: (a) => `search ${argText(a, "query")}` },
     execute: async ({ query }, _ctx, signal) => {
-      const hits = searchApiKey ? await braveSearch(doFetch, searchApiKey, query, signal) : await duckDuckGoSearch(doFetch, query, signal);
+      let hits: SearchHit[];
+      if (searchApiKey) hits = await braveSearch(doFetch, searchApiKey, query, signal);
+      else if (composioSearch) hits = await googleViaComposio(doFetch, composioSearch, query, signal).catch(() => duckDuckGoSearch(doFetch, query, signal));
+      else hits = await duckDuckGoSearch(doFetch, query, signal);
       if (hits.length === 0) return textResult(`No results for "${query}".`);
       const lines = hits.map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}${h.snippet ? `\n   ${h.snippet}` : ""}`);
       return textResult(wrapUntrusted(lines.join("\n"), `web search results for ${query}`));
@@ -446,6 +451,28 @@ async function braveSearch(doFetch: typeof fetch, key: string, query: string, si
     .filter((r) => r.url)
     .slice(0, SEARCH_RESULTS)
     .map((r) => ({ title: r.title ?? r.url!, url: r.url!, snippet: htmlToText(r.description ?? "") }));
+}
+
+/** Google results through Composio's COMPOSIO_SEARCH_SEARCH tool (SerpAPI underneath; no connection needed). */
+async function googleViaComposio(doFetch: typeof fetch, cfg: { apiKey: string; userId: string }, query: string, signal?: AbortSignal): Promise<SearchHit[]> {
+  const res = await doFetch("https://backend.composio.dev/api/v3/tools/execute/COMPOSIO_SEARCH_SEARCH", {
+    method: "POST",
+    signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    headers: { "content-type": "application/json", "x-api-key": cfg.apiKey },
+    body: JSON.stringify({ user_id: cfg.userId, arguments: { query } }),
+  });
+  if (!res.ok) throw new Error(`Composio search failed: HTTP ${res.status}`);
+  const data = (await res.json()) as {
+    successful?: boolean;
+    data?: { results?: { organic_results?: Array<{ title?: string; link?: string; snippet?: string }> } };
+  };
+  if (data.successful === false) throw new Error("Composio search failed");
+  const hits = (data.data?.results?.organic_results ?? [])
+    .filter((r) => r.link)
+    .slice(0, SEARCH_RESULTS)
+    .map((r) => ({ title: r.title ?? r.link!, url: r.link!, snippet: r.snippet ?? "" }));
+  if (hits.length === 0) throw new Error("Composio search returned no results");
+  return hits;
 }
 
 async function duckDuckGoSearch(doFetch: typeof fetch, query: string, signal?: AbortSignal): Promise<SearchHit[]> {
@@ -471,6 +498,8 @@ export function parseDuckDuckGoHtml(html: string): SearchHit[] {
     const href = decodeDuckDuckGoHref(decodeEntities(m[1] ?? ""));
     const title = htmlToText(m[2] ?? "");
     if (!href || !title) continue;
+    // Sponsored results click through duckduckgo.com/y.js; they are ads, not answers.
+    if (/^https:\/\/duckduckgo\.com\/y\.js/.test(href)) continue;
     hits.push({ title, url: href, snippet: snippets[i] ?? "" });
   }
   return hits;

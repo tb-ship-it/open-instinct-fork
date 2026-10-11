@@ -184,6 +184,7 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
         : {}),
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
       ...(env.BRAVE_SEARCH_API_KEY ? { searchApiKey: env.BRAVE_SEARCH_API_KEY } : {}),
+      ...(env.COMPOSIO_API_KEY ? { composioSearch: { apiKey: env.COMPOSIO_API_KEY, userId: externalUserId } } : {}),
     }),
   );
 

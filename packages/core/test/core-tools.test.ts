@@ -24,7 +24,7 @@ const stubLookup = async (host: string): Promise<string[]> => {
   return ["93.184.216.34"];
 };
 
-function setup(opts: { fetchImpl?: typeof fetch; searchApiKey?: string; lookup?: (host: string) => Promise<string[]>; onApprovalSettled?: CoreToolDeps["onApprovalSettled"]; images?: CoreToolDeps["images"]; workspaceDir?: string } = {}) {
+function setup(opts: { fetchImpl?: typeof fetch; searchApiKey?: string; composioSearch?: CoreToolDeps["composioSearch"]; lookup?: (host: string) => Promise<string[]>; onApprovalSettled?: CoreToolDeps["onApprovalSettled"]; images?: CoreToolDeps["images"]; workspaceDir?: string } = {}) {
   const state = tempState();
   const sent: Array<{ msg: OutboundMessage; principal: Principal }> = [];
   const outbox: Outbox = { send: async (msg, ctx) => void sent.push({ msg, principal: ctx.principal }) };
@@ -357,6 +357,43 @@ describe("web tools", () => {
     expect(out).toContain("1. First Result\n   https://example.com/one\n   Snippet & one");
     expect(out).toContain("2. Second\n   https://example.org/two\n   Snippet two");
     expect(out).toContain('<untrusted source="web search results for open instinct">');
+  });
+
+  it("web_search drops DuckDuckGo's sponsored results", async () => {
+    const html = `
+      <div class="result result--ad">
+        <a rel="nofollow" class="result__a" href="https://duckduckgo.com/y.js?ad_domain=opodo.co.uk&amp;u3=x">London-Helsinki from £22</a>
+        <a class="result__snippet" href="https://duckduckgo.com/y.js?ad_domain=opodo.co.uk">Ad snippet</a>
+      </div>
+      <div class="result results_links">
+        <a rel="nofollow" class="result__a" href="https://www.finnair.com/">Finnair</a>
+        <a class="result__snippet" href="https://www.finnair.com/">Fly to Helsinki</a>
+      </div>`;
+    const { run, text } = setup({ fetchImpl: fakeFetch({ "https://html.duckduckgo.com/html/": { body: html } }) });
+    const out = text(await run("web_search", { query: "flights" }));
+    expect(out).not.toContain("y.js");
+    expect(out).toContain("1. Finnair\n   https://www.finnair.com/\n   Fly to Helsinki");
+  });
+
+  it("web_search uses Composio's Google search when configured, and falls back to DuckDuckGo", async () => {
+    let body: { user_id?: string; arguments?: { query?: string } } = {};
+    let composioStatus = 200;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith("https://html.duckduckgo.com/html/")) {
+        return new Response(`<a class="result__a" href="https://ddg.test/">From DDG</a>`, { status: 200 });
+      }
+      expect(url).toBe("https://backend.composio.dev/api/v3/tools/execute/COMPOSIO_SEARCH_SEARCH");
+      expect((init?.headers as Record<string, string>)["x-api-key"]).toBe("ck");
+      body = JSON.parse(String(init?.body));
+      const organic_results = [{ title: "Finnair", link: "https://www.finnair.com/", snippet: "Fly to Helsinki" }];
+      return new Response(JSON.stringify({ successful: true, data: { results: { organic_results } } }), { status: composioStatus });
+    }) as typeof fetch;
+    const { run, text } = setup({ fetchImpl, composioSearch: { apiKey: "ck", userId: "bobby" } });
+    expect(text(await run("web_search", { query: "LHR HEL" }))).toContain("1. Finnair\n   https://www.finnair.com/\n   Fly to Helsinki");
+    expect(body).toEqual({ user_id: "bobby", arguments: { query: "LHR HEL" } });
+    composioStatus = 500;
+    expect(text(await run("web_search", { query: "LHR HEL" }))).toContain("1. From DDG");
   });
 
   it("web_search uses Brave when a key is set and caps at 8 results", async () => {
