@@ -79,11 +79,23 @@ function memoryTools({ memory }: CoreToolDeps): RegisteredTool[] {
   const memoryRead = defineTool({
     name: "memory_read",
     label: "Read memory",
-    description: "Read durable memory (MEMORY.md) or today's journal. Use section \"journal\" for the journal, otherwise durable memory is returned.",
-    parameters: Type.Object({ section: Type.Optional(Type.String({ description: "\"durable\" (default) or \"journal\"" })) }),
+    description:
+      "Read durable memory (MEMORY.md), today's journal, or the owner's reference notes. Section \"journal\" for the journal; section \"reference\" with a topic for one reference section (without a topic it lists them); otherwise durable memory.",
+    parameters: Type.Object({
+      section: Type.Optional(Type.String({ description: "\"durable\" (default), \"journal\" or \"reference\"" })),
+      topic: Type.Optional(Type.String({ description: "Reference only: the section heading, or a word from it" })),
+    }),
     meta: { capabilities: ["memory.write"], group: "memory" },
-    execute: async ({ section }, ctx) => {
-      if (section?.toLowerCase() === "journal") return textResult(memory.readJournal(ctx.now()) || "(journal is empty today)");
+    execute: async ({ section, topic }, ctx) => {
+      const which = section?.toLowerCase();
+      if (which === "journal") return textResult(memory.readJournal(ctx.now()) || "(journal is empty today)");
+      if (which === "reference") {
+        const topics = memory.referenceTopics();
+        if (!topics.length) return textResult("(there are no reference notes)");
+        const found = topic?.trim() ? memory.referenceSection(topic) : undefined;
+        if (found) return textResult(found);
+        return textResult(`${topic?.trim() ? `No reference section matches "${topic.trim()}". ` : ""}Reference sections: ${topics.join("; ")}.`);
+      }
       return textResult(memory.readDurable() || "(memory is empty)");
     },
   });

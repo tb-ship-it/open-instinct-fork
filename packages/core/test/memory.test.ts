@@ -91,6 +91,29 @@ describe("MemoryStore", () => {
     expect(m.preferencesDigest()).toBe("Likes window seats.\nNo shellfish.");
   });
 
+  it("reads reference notes a section at a time and lists their topics in the digest", () => {
+    const state = tempState();
+    const m = new MemoryStore(state);
+    expect(m.referenceTopics()).toEqual([]);
+    expect(m.digest()).toBe("");
+    state.writeText("memory/REFERENCE.md", "# Reference\n\nIntro.\n\n---\n\n## 1. The Machine\n\n**Scope**\n- Permanent hold.\n\n---\n\n## 2. Found Capital and investing\n\n- Carry pool.\n");
+    expect(m.referenceTopics()).toEqual(["1. The Machine", "2. Found Capital and investing"]);
+    expect(m.referenceSection("the machine")).toBe("## 1. The Machine\n\n**Scope**\n- Permanent hold.");
+    expect(m.referenceSection("found")).toBe("## 2. Found Capital and investing\n\n- Carry pool.");
+    expect(m.referenceSection("bobby")).toBeUndefined();
+    const d = m.digest(4000);
+    expect(d).toContain("## Reference notes");
+    expect(d).toContain("1. The Machine; 2. Found Capital and investing");
+    expect(d).not.toContain("Permanent hold");
+  });
+
+  it("says when durable memory is cut off so the agent tidies it", () => {
+    const m = new MemoryStore(tempState());
+    m.replaceDurable("# Memory\n" + "a fact worth keeping\n".repeat(100));
+    expect(m.digest(16_000)).not.toContain("longer than shown");
+    expect(m.digest(1000)).toContain("longer than shown");
+  });
+
   it("rewrites memory, keeping the newest 20 previous versions", () => {
     const state = tempState();
     const m = new MemoryStore(state);

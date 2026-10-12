@@ -292,6 +292,7 @@ function memorySection({ memoryDigest, principal, capabilities, config }: Prompt
           `- Sections: About (who ${owner} is), People (one line per person: name, relation, anything useful), Preferences (only harmless likes and dislikes; people ${owner} trusts may see this section), Rules (standing instructions for you), Places and routines, Work.`,
           "- When a fact changes or turns out wrong, or the same thing is saved twice, fix it with memory_read then memory_rewrite. Never keep two versions of a fact.",
           `- Check memory before asking ${owner} something; do not ask what you already know.`,
+          "- Longer background, when there is any, lives in the reference notes listed under Reference notes. Read the relevant section before a task that touches it; do not copy it into memory.",
           "- After a task that matters, journal_append one line: what happened, what was decided, what is still open.",
         ].join("\n")
       : undefined;

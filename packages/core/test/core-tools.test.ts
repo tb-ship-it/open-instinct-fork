@@ -168,6 +168,15 @@ describe("memory tools", () => {
     expect(deps.memory.readDurable()).toContain("person 39");
     expect(deps.memory.readDurable()).not.toContain("Sam is her partner");
   });
+
+  it("reads reference notes by topic", async () => {
+    const { run, text, deps } = setup();
+    expect(text(await run("memory_read", { section: "reference" }))).toContain("no reference notes");
+    deps.memory["state"].writeText("memory/REFERENCE.md", "# Reference\n\n## 1. Bobby\n- Runs on a Pi.\n\n## 2. Consulting\n- Day rate.\n");
+    expect(text(await run("memory_read", { section: "reference" }))).toBe("Reference sections: 1. Bobby; 2. Consulting.");
+    expect(text(await run("memory_read", { section: "reference", topic: "consulting" }))).toBe("## 2. Consulting\n- Day rate.");
+    expect(text(await run("memory_read", { section: "reference", topic: "golf" }))).toContain('No reference section matches "golf"');
+  });
 });
 
 describe("schedule tools", () => {

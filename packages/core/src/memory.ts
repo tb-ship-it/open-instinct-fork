@@ -11,6 +11,7 @@ import type { StateDir } from "./state.js";
 const DURABLE = "memory/MEMORY.md";
 const JOURNAL_DIR = "memory/journal";
 const HISTORY_DIR = "memory/history";
+const REFERENCE = "memory/REFERENCE.md";
 const HISTORY_KEEP = 20;
 
 /**
@@ -19,8 +20,8 @@ const HISTORY_KEEP = 20;
  */
 export const MEMORY_SECTIONS = ["About", "People", "Preferences", "Rules", "Places and routines", "Work"] as const;
 
-/** The owner's digest budget: about 3k tokens, so a well-kept MEMORY.md is seen whole every turn. */
-export const OWNER_MEMORY_DIGEST_CHARS = 12_000;
+/** The owner's digest budget: about 4k tokens, so a well-kept MEMORY.md (up to ~9.6k characters) is seen whole every turn. */
+export const OWNER_MEMORY_DIGEST_CHARS = 16_000;
 
 const DURABLE_TEMPLATE = `# Memory
 
@@ -37,6 +38,10 @@ export function journalDate(d: Date): string {
 
 function timeOfDay(d: Date): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function normaliseTopic(text: string): string {
+  return text.toLowerCase().replace(/^\s*\d+[.)]\s*/, "").replace(/\s+/g, " ").trim();
 }
 
 function head(text: string, max: number): string {
@@ -138,17 +143,43 @@ export class MemoryStore {
     return head(body, maxChars);
   }
 
+  /** memory/REFERENCE.md: longer background the owner keeps by hand, read a section at a time. */
+  readReference(): string {
+    return this.state.readText(REFERENCE, "");
+  }
+
+  /** The `## ` headings of the reference notes, in order. */
+  referenceTopics(): string[] {
+    return [...this.readReference().matchAll(/^##\s+(.+)$/gm)].map((m) => m[1]!.trim());
+  }
+
+  /** The reference section whose heading contains `topic` (case and numbering ignored). */
+  referenceSection(topic: string): string | undefined {
+    const want = normaliseTopic(topic);
+    if (!want) return undefined;
+    const sections = this.readReference().split(/^(?=##\s)/m).filter((s) => s.startsWith("## "));
+    const heading = (s: string) => normaliseTopic(s.slice(3, s.indexOf("\n") < 0 ? undefined : s.indexOf("\n")));
+    const hit = sections.find((s) => heading(s) === want) ?? sections.find((s) => heading(s).includes(want));
+    return hit?.replace(/\n-{3,}\s*$/, "").trim();
+  }
+
   /**
-   * What the model sees every turn: the start of MEMORY.md and the end of the last
-   * two days of journal. The budget is split 60/25/15 so durable facts win.
+   * What the model sees every turn: the start of MEMORY.md, the reference topics, and the
+   * end of the last two days of journal. The budget is split 60/25/15 so durable facts win.
    */
   digest(maxChars = 4000, now: Date = new Date()): string {
     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const durable = this.readDurable().trim();
     const today = this.readJournal(now).trim();
     const prior = this.readJournal(yesterday).trim();
+    const topics = this.referenceTopics();
     const parts: string[] = [];
-    if (durable) parts.push(head(durable, Math.floor(maxChars * 0.6)));
+    const durableBudget = Math.floor(maxChars * 0.6);
+    if (durable) {
+      parts.push(head(durable, durableBudget));
+      if (durable.length > durableBudget) parts.push("(Memory is longer than shown here. Tidy it: memory_read, then memory_rewrite with duplicates merged and stale lines removed.)");
+    }
+    if (topics.length) parts.push(`## Reference notes\nRead one with memory_read (section "reference", topic) when a task touches it: ${topics.join("; ")}.`);
     if (today) parts.push(`## Journal, today (${journalDate(now)})\n${tail(today, Math.floor(maxChars * 0.25))}`);
     if (prior) parts.push(`## Journal, yesterday (${journalDate(yesterday)})\n${tail(prior, Math.floor(maxChars * 0.15))}`);
     return parts.join("\n\n");
