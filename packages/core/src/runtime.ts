@@ -17,7 +17,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { ApprovalMatch, ApprovalStore } from "./approvals.js";
 import type { AuditLog } from "./audit.js";
 import type { ContactStore } from "./contacts.js";
-import type { MemoryStore } from "./memory.js";
+import { OWNER_MEMORY_DIGEST_CHARS, type MemoryStore } from "./memory.js";
 import { OwnerNotifier } from "./notifier.js";
 import { DEFAULT_TIER_TABLE, SPEND_CAPABILITIES, type PolicyEngine } from "./policy.js";
 import { looksLikePhone, normalizePhone, resolvePrincipal } from "./principal.js";
@@ -1054,7 +1054,7 @@ export class AgentRuntime {
    */
   private memoryDigestFor(principal: Principal): string {
     const { memory, policy } = this.deps;
-    if (principal.kind === "owner" && principal.tier === "owner") return memory.digest(4000, this.now());
+    if (principal.kind === "owner" && principal.tier === "owner") return memory.digest(OWNER_MEMORY_DIGEST_CHARS, this.now());
     const permission = policy.permissionFor(principal.tier, "owner.profile.preferences");
     if (permission !== "yes" && permission !== "partial") return "";
     const prefs = memory.preferencesDigest(permission === "yes" ? 1500 : 600);

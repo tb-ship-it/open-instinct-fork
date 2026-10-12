@@ -45,7 +45,7 @@ form. It is a conversation, one question at a time.
 
 ## What to save
 
-- `memory_write`: name, city, timezone, messaging preferences, quiet hours,
+- `memory_write` (durable, with a section: About, People, Preferences, Rules, Places and routines, Work): name, city, timezone, messaging preferences, quiet hours,
   dietary notes or habits mentioned in passing.
 - `contacts_upsert` and `trust_set_tier`: every person named, with the tier the
   owner chose. Say the tier back in plain words ("Sam can see your calendar and

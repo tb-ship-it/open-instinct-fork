@@ -65,7 +65,7 @@ describe("coreTools registration", () => {
   it("registers the documented tools with the documented capabilities", () => {
     const { registry } = setup();
     const names = registry.all().map((t) => t.spec.name).sort();
-    expect(names).toEqual(["approval_settle", "ask_owner", "audit_read", "create_pdf", "image_generate", "journal_append", "memory_read", "memory_write", "notify_owner", "schedule_create", "schedule_delete", "schedule_list", "web_fetch", "web_search"]);
+    expect(names).toEqual(["approval_settle", "ask_owner", "audit_read", "create_pdf", "image_generate", "journal_append", "memory_read", "memory_rewrite", "memory_write", "notify_owner", "schedule_create", "schedule_delete", "schedule_list", "web_fetch", "web_search"]);
     expect(registry.meta("create_pdf")).toMatchObject({ capabilities: ["files.write"], group: "files" });
     expect(registry.meta("memory_write")?.capabilities).toEqual(["memory.write"]);
     expect(registry.meta("schedule_create")?.capabilities).toEqual(["schedule.manage"]);
@@ -156,6 +156,17 @@ describe("memory tools", () => {
     expect(journal).toContain("Booked a table");
     expect(journal).toContain("Sam asked about dinner");
     expect(journal).not.toContain("window seats");
+  });
+
+  it("files facts under sections and rewrites memory only when sent the whole file", async () => {
+    const { run, text, deps } = setup();
+    expect(text(await run("memory_write", { text: "Sam is her partner.", durable: true, section: "People" }))).toContain("under People");
+    const long = "# Memory\n\n## People\n" + Array.from({ length: 40 }, (_, i) => `- person ${i} is a friend from school`).join("\n");
+    expect(text(await run("memory_rewrite", { text: "Sam is her partner." }))).toContain("Not saved");
+    expect(text(await run("memory_rewrite", { text: long }))).toContain("rewritten");
+    expect(text(await run("memory_rewrite", { text: "# Memory\n- person 0" }))).toContain("less than half");
+    expect(deps.memory.readDurable()).toContain("person 39");
+    expect(deps.memory.readDurable()).not.toContain("Sam is her partner");
   });
 });
 

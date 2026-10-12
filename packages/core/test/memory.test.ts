@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MemoryStore, journalDate } from "../src/memory.js";
 import { tempState } from "./helpers.js";
@@ -76,5 +77,28 @@ describe("MemoryStore", () => {
     expect(d).not.toContain("Mercury");
     expect(d).not.toContain("Sam");
     expect(store.preferencesDigest(20).length).toBeLessThanOrEqual(24);
+  });
+
+  it("appends durable facts under their section, creating it when missing", () => {
+    const m = new MemoryStore(tempState());
+    m.appendDurable("Loose fact.");
+    m.appendDurable("Sam is her partner.", "People");
+    m.appendDurable("Likes window seats.", "Preferences");
+    m.appendDurable("Jo is her sister.", "people");
+    m.appendDurable("No shellfish.", "Preferences");
+    const text = m.readDurable();
+    expect(text).toContain("Loose fact.\n\n## People\nSam is her partner.\nJo is her sister.\n\n## Preferences\nLikes window seats.\nNo shellfish.\n");
+    expect(m.preferencesDigest()).toBe("Likes window seats.\nNo shellfish.");
+  });
+
+  it("rewrites memory, keeping the newest 20 previous versions", () => {
+    const state = tempState();
+    const m = new MemoryStore(state);
+    expect(m.rewriteDurable("# Memory\nfirst")).toBeUndefined(); // nothing to keep yet
+    for (let i = 0; i < 25; i++) m.rewriteDurable(`# Memory\nversion ${i}`, new Date(Date.UTC(2026, 9, 3, 12, i)));
+    expect(m.readDurable()).toBe("# Memory\nversion 24\n");
+    const kept = readdirSync(state.path("memory/history")).sort();
+    expect(kept).toHaveLength(20);
+    expect(state.readText(`memory/history/${kept.at(-1)}`)).toBe("# Memory\nversion 23\n");
   });
 });

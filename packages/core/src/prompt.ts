@@ -68,7 +68,7 @@ export function describePromptLayers(input: PromptInput): PromptLayer[] {
     layer("reach", PROMPT_SOURCES.reach, reachSection(input)),
     layer("setup", PROMPT_SOURCES.setup, input.setup?.trim() || undefined),
     layer("rules", PROMPT_SOURCES.rules, rulesSection(input)),
-    layer("memory", PROMPT_SOURCES.memory, memorySection(input.memoryDigest)),
+    layer("memory", PROMPT_SOURCES.memory, memorySection(input)),
     layer("skills", PROMPT_SOURCES.skills, skillsSection(input.skillsPrompt)),
     layer("approvals", PROMPT_SOURCES.approvals, approvalsSection(input.pendingApprovals)),
     layer("long-tasks", PROMPT_SOURCES.longTasks, longTaskSection(input.channel)),
@@ -279,10 +279,24 @@ function rulesSection({ config }: PromptInput): string {
   ].join("\n");
 }
 
-function memorySection(digest: string): string | undefined {
-  const text = digest.trim();
-  if (!text) return undefined;
-  return `# Memory\n${text}`;
+function memorySection({ memoryDigest, principal, capabilities, config }: PromptInput): string | undefined {
+  const text = memoryDigest.trim();
+  const owner = config.owner.name;
+  const learning =
+    principal.kind === "owner" && principal.tier === "owner" && capabilities.includes("memory.write")
+      ? [
+          `How you learn about ${owner}: the memory below is all you will know about ${owner} next week, so keep it true and useful.`,
+          `- When ${owner} says something that will still matter in a month, save it right away with memory_write (durable=true, with a section), without announcing it: people and how they relate to ${owner}, places, routines, likes and dislikes, constraints, standing rules for you, and corrections.`,
+          `- Also save what you work out yourself and confirm: the airport ${owner} flies from, the brands they choose, how they like replies.`,
+          "- Not one-off task details (that goes in the journal), and never passwords, codes, card or account numbers.",
+          `- Sections: About (who ${owner} is), People (one line per person: name, relation, anything useful), Preferences (only harmless likes and dislikes; people ${owner} trusts may see this section), Rules (standing instructions for you), Places and routines, Work.`,
+          "- When a fact changes or turns out wrong, or the same thing is saved twice, fix it with memory_read then memory_rewrite. Never keep two versions of a fact.",
+          `- Check memory before asking ${owner} something; do not ask what you already know.`,
+          "- After a task that matters, journal_append one line: what happened, what was decided, what is still open.",
+        ].join("\n")
+      : undefined;
+  if (!text && !learning) return undefined;
+  return ["# Memory", learning, text].filter(Boolean).join("\n\n");
 }
 
 function skillsSection(skillsPrompt: string | undefined): string | undefined {

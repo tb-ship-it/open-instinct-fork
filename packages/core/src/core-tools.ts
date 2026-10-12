@@ -7,7 +7,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { ApprovalStore } from "./approvals.js";
 import type { AuditLog } from "./audit.js";
-import type { MemoryStore } from "./memory.js";
+import { MEMORY_SECTIONS, type MemoryStore } from "./memory.js";
 import { checkPublicTarget, type Lookup } from "./net-guard.js";
 import { pdfPageCount, renderMarkdownToPdf } from "./pdf.js";
 import { wrapUntrusted } from "./prompt.js";
@@ -91,19 +91,44 @@ function memoryTools({ memory }: CoreToolDeps): RegisteredTool[] {
   const memoryWrite = defineTool({
     name: "memory_write",
     label: "Write memory",
-    description: "Remember something. durable=true appends to MEMORY.md (facts, preferences, people). Otherwise it goes to today's journal.",
+    description: `Remember something. durable=true adds one line to MEMORY.md under a section (${MEMORY_SECTIONS.join(", ")}). Otherwise it goes to today's journal.`,
     parameters: Type.Object({
       text: Type.String({ description: "What to remember, one or two sentences" }),
       durable: Type.Optional(Type.Boolean({ description: "true for long-term memory, false for the daily journal" })),
+      section: Type.Optional(
+        Type.String({
+          description: `Durable only. One of: ${MEMORY_SECTIONS.join(", ")}. Preferences is shown to people whose tier may know the owner's preferences, so only harmless likes and dislikes go there.`,
+        }),
+      ),
     }),
     meta: { capabilities: ["memory.write"], group: "memory", describe: (a) => `remember: ${argText(a, "text")}` },
-    execute: async ({ text, durable }, ctx) => {
+    execute: async ({ text, durable, section }, ctx) => {
       if (durable) {
-        memory.appendDurable(text.trim());
-        return textResult("Saved to durable memory.");
+        memory.appendDurable(text.trim(), section);
+        return textResult(section?.trim() ? `Saved to durable memory under ${section.trim()}.` : "Saved to durable memory.");
       }
       memory.appendJournal(text.trim(), ctx.now());
       return textResult("Noted in today's journal.");
+    },
+  });
+
+  const memoryRewrite = defineTool({
+    name: "memory_rewrite",
+    label: "Rewrite memory",
+    description:
+      "Replace the whole of MEMORY.md: correct a fact that changed, remove one that is wrong, merge duplicates, or move lines into the right sections. Call memory_read first and send back the full file; anything you leave out is forgotten. The previous version is kept.",
+    parameters: Type.Object({ text: Type.String({ description: "The complete new MEMORY.md, markdown, starting with \"# Memory\"" }) }),
+    meta: { capabilities: ["memory.write"], group: "memory", describe: () => "rewrite memory" },
+    execute: async ({ text }, ctx) => {
+      const next = text.trim();
+      if (!next.startsWith("# Memory")) return textResult('Not saved: the new memory must be the whole file, starting with "# Memory".');
+      const before = memory.readDurable().trim();
+      // A rewrite that drops most of memory is far more likely a mistake than a cleanup.
+      if (before.length > 400 && next.length < before.length / 2) {
+        return textResult(`Not saved: that is less than half of the current memory (${next.length} of ${before.length} characters). Read it again with memory_read and send the full file.`);
+      }
+      memory.rewriteDurable(next, ctx.now());
+      return textResult("Memory rewritten; the previous version is kept in memory/history.");
     },
   });
 
@@ -119,7 +144,7 @@ function memoryTools({ memory }: CoreToolDeps): RegisteredTool[] {
     },
   });
 
-  return [memoryRead, memoryWrite, journalAppend];
+  return [memoryRead, memoryWrite, memoryRewrite, journalAppend];
 }
 
 // ---------------------------------------------------------------------------

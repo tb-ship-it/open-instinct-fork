@@ -74,7 +74,7 @@ describe("buildSystemPrompt", () => {
   });
 
   it("omits empty memory and skills, includes them when present", () => {
-    const bare = buildSystemPrompt(input({ memoryDigest: "   " }));
+    const bare = buildSystemPrompt(input({ memoryDigest: "   ", capabilities: ["converse"] }));
     expect(bare).not.toContain("# Memory");
     expect(bare).not.toContain("# Skills");
     const full = buildSystemPrompt(input({ skillsPrompt: "## travel\nBook flights via the computer." }));
@@ -140,7 +140,19 @@ describe("buildSystemPrompt", () => {
     const custom = describePromptLayers(input({ config: cfg, persona: DEFAULT_PERSONA }));
     expect(custom[0]!.source).toBe(`${PROMPT_SOURCES.personaFile}, plus ${PROMPT_SOURCES.personaConfig}`);
     // Empty layers are left out rather than listed blank.
-    expect(describePromptLayers(input({ memoryDigest: "" })).some((l) => l.id === "memory")).toBe(false);
+    expect(describePromptLayers(input({ memoryDigest: "", principal: principalOf("friend"), capabilities: ["converse"] })).some((l) => l.id === "memory")).toBe(false);
+  });
+
+  it("tells the owner's agent how to learn, even before memory has anything in it", () => {
+    const empty = buildSystemPrompt(input({ memoryDigest: "" }));
+    expect(empty).toContain("# Memory");
+    expect(empty).toContain("save it right away with memory_write");
+    expect(empty).toContain("memory_rewrite");
+    const full = buildSystemPrompt(input());
+    expect(full.indexOf("How you learn")).toBeLessThan(full.indexOf("Likes early flights"));
+    for (const tier of ["partner", "family", "friend", "stranger"] as const) {
+      expect(buildSystemPrompt(input({ principal: principalOf(tier), capabilities: ["converse"] })), tier).not.toContain("How you learn");
+    }
   });
 });
 

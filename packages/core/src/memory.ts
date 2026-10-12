@@ -4,10 +4,23 @@
  * happened each day. The prompt builder injects `digest()`; Pi compaction keeps
  * the conversation itself small.
  */
+import { readdirSync, rmSync } from "node:fs";
+import path from "node:path";
 import type { StateDir } from "./state.js";
 
 const DURABLE = "memory/MEMORY.md";
 const JOURNAL_DIR = "memory/journal";
+const HISTORY_DIR = "memory/history";
+const HISTORY_KEEP = 20;
+
+/**
+ * The headings MEMORY.md is kept under. "Preferences" is special: people whose tier may know
+ * the owner's preferences are shown that section and nothing else (`preferencesDigest`).
+ */
+export const MEMORY_SECTIONS = ["About", "People", "Preferences", "Rules", "Places and routines", "Work"] as const;
+
+/** The owner's digest budget: about 3k tokens, so a well-kept MEMORY.md is seen whole every turn. */
+export const OWNER_MEMORY_DIGEST_CHARS = 12_000;
 
 const DURABLE_TEMPLATE = `# Memory
 
@@ -49,15 +62,46 @@ export class MemoryStore {
     return this.state.readText(DURABLE, "");
   }
 
-  appendDurable(text: string): void {
-    const current = this.readDurable();
-    const base = current || DURABLE_TEMPLATE;
-    const sep = base.endsWith("\n") ? "" : "\n";
-    this.state.writeText(DURABLE, `${base}${sep}${text.trim()}\n`);
+  /** Appends a fact at the end, or at the end of a `## section` (created when missing). */
+  appendDurable(text: string, section?: string): void {
+    const base = this.readDurable() || DURABLE_TEMPLATE;
+    const line = text.trim();
+    const name = section?.trim();
+    if (!name) {
+      const sep = base.endsWith("\n") ? "" : "\n";
+      this.state.writeText(DURABLE, `${base}${sep}${line}\n`);
+      return;
+    }
+    const lines = base.replace(/\n+$/, "").split("\n");
+    const start = lines.findIndex((l) => /^##\s/.test(l) && l.replace(/^##\s+/, "").trim().toLowerCase() === name.toLowerCase());
+    if (start < 0) {
+      this.state.writeText(DURABLE, `${lines.join("\n")}\n\n## ${name}\n${line}\n`);
+      return;
+    }
+    let end = lines.findIndex((l, i) => i > start && /^#{1,2}\s/.test(l));
+    if (end < 0) end = lines.length;
+    while (end > start + 1 && lines[end - 1]!.trim() === "") end--;
+    lines.splice(end, 0, line);
+    this.state.writeText(DURABLE, lines.join("\n") + "\n");
   }
 
   replaceDurable(text: string): void {
     this.state.writeText(DURABLE, text.endsWith("\n") ? text : text + "\n");
+  }
+
+  /** Replaces MEMORY.md, keeping the previous version in memory/history/ (the newest 20). */
+  rewriteDurable(text: string, now: Date = new Date()): string | undefined {
+    const previous = this.readDurable();
+    let saved: string | undefined;
+    if (previous.trim()) {
+      saved = `${HISTORY_DIR}/MEMORY-${now.toISOString().replace(/[:.]/g, "-")}.md`;
+      this.state.writeText(saved, previous);
+      const dir = this.state.path(HISTORY_DIR);
+      const old = readdirSync(dir).filter((f) => /^MEMORY-.*\.md$/.test(f)).sort().slice(0, -HISTORY_KEEP);
+      for (const f of old) rmSync(path.join(dir, f), { force: true });
+    }
+    this.replaceDurable(text);
+    return saved;
   }
 
   journalPath(date: Date = new Date()): string {

@@ -9,6 +9,7 @@ import {
   ALL_CAPABILITIES,
   ApprovalStore,
   MemoryStore,
+  OWNER_MEMORY_DIGEST_CHARS,
   PolicyEngine,
   describePromptLayers,
   loadConfig,
@@ -74,7 +75,7 @@ export async function ownerPromptInput(ctx: CliContext, opts: PromptPreviewOptio
     capabilities: ALL_CAPABILITIES.filter((cap) => policy.canEver(owner, cap)),
     // load_skill sits in the system group, so the preview lists it whenever skills are shown.
     toolGroups: skills ? [...SAMPLE_OWNER_TOOL_GROUPS, "system"] : SAMPLE_OWNER_TOOL_GROUPS,
-    memoryDigest: new MemoryStore(state).digest(4000, opts.now ?? new Date()),
+    memoryDigest: new MemoryStore(state).digest(OWNER_MEMORY_DIGEST_CHARS, opts.now ?? new Date()),
     persona: readPersona(state),
     instructions: readAgentsInstructions(state),
     skillsPrompt: skills,
