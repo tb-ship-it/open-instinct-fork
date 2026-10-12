@@ -282,6 +282,13 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
       maritimeMcpUrl: config.computer.maritimeMcpUrl ?? env.MARITIME_COMPUTERS_MCP_URL ?? DEFAULT_MARITIME_MCP_URL,
       maritimeApiKey: env.MARITIME_API_KEY,
       externalUserId,
+      browser: {
+        ...(env.INSTINCT_BROWSER_PATH?.trim() ? { executablePath: env.INSTINCT_BROWSER_PATH.trim() } : {}),
+        profileDir: state.path("browser", "profile"),
+        outputDir: state.path("workspace", "browser"),
+        configPath: state.path("browser", "playwright-mcp.json"),
+        timezone: config.owner.timezone,
+      },
       // Maritime starts the desktop stack in the background; desktopd may still be coming up.
       expectDesktopd: env.MARITIME_DESKTOP === "1",
       ...(env.MARITIME_AGENT_ID ? { agentId: env.MARITIME_AGENT_ID } : {}),
@@ -293,7 +300,7 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
     const tools = await safely(log, "computer tools", () => computer.tools());
     if (tools && tools.length > 0) {
       registry.registerMany(tools);
-      promptSections.push(computerGuidance());
+      promptSections.push(computer.guidance?.() ?? computerGuidance());
       log(`computer: ${computer.describe()}`);
     }
   }

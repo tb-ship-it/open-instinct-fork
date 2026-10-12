@@ -42,7 +42,7 @@ function splitList(value: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
-const COMPUTER_MODES = new Set<InstinctConfig["computer"]["mode"]>(["auto", "desktopd", "maritime", "none"]);
+const COMPUTER_MODES = new Set<InstinctConfig["computer"]["mode"]>(["auto", "desktopd", "maritime", "browser", "none"]);
 
 /** Build a fresh config from the environment. Used only when config.json is missing. */
 export function configFromEnv(env: NodeJS.ProcessEnv): InstinctConfig {

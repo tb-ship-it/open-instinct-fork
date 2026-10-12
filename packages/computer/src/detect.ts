@@ -9,7 +9,9 @@
  * up to a minute before we conclude it is absent. Plain "auto" keeps the single fast probe.
  */
 import { DEFAULT_DESKTOPD_URL, DesktopdBackend, DesktopdClient, type DesktopdHealth } from "./desktopd.js";
+import { existsSync } from "node:fs";
 import { DEFAULT_MARITIME_MCP_URL, MaritimeMcpBackend } from "./maritime.js";
+import { LOCAL_BROWSER_CANDIDATES, LocalBrowserBackend, type LocalBrowserBackendOptions } from "./local-browser.js";
 import type { ComputerBackend, ComputerMode, Logger } from "./types.js";
 
 export interface DetectComputerOptions {
@@ -17,6 +19,8 @@ export interface DetectComputerOptions {
   desktopdUrl?: string;
   maritimeMcpUrl?: string;
   maritimeApiKey?: string;
+  /** The local browser, used by mode "browser" and as the last resort of "auto". */
+  browser?: Omit<LocalBrowserBackendOptions, "executablePath" | "logger"> & { executablePath?: string };
   externalUserId?: string;
   /** Maritime agent id for the dashboard link in takeover hints. */
   agentId?: string;
@@ -99,6 +103,11 @@ export async function detectComputer(opts: DetectComputerOptions): Promise<Compu
       logger: log,
     });
   const waitMs = opts.desktopdWaitMs ?? DESKTOPD_WAIT_MS;
+  const localBrowser = (): LocalBrowserBackend | undefined => {
+    if (!opts.browser) return undefined;
+    const executablePath = opts.browser.executablePath ?? LOCAL_BROWSER_CANDIDATES.find((p) => existsSync(p));
+    return executablePath ? new LocalBrowserBackend({ ...opts.browser, executablePath, logger: log }) : undefined;
+  };
 
   switch (opts.mode) {
     case "none":
@@ -110,6 +119,11 @@ export async function detectComputer(opts: DetectComputerOptions): Promise<Compu
     }
     case "maritime":
       return maritime();
+    case "browser": {
+      const backend = localBrowser();
+      if (!backend) throw new Error("computer mode \"browser\" needs Chromium: install chromium-headless-shell or set INSTINCT_BROWSER_PATH");
+      return backend;
+    }
     case "auto": {
       // With the platform flag a slow start is expected, so the probe gets the full budget.
       const health = await probe(opts.expectDesktopd ? waitMs : 0);
@@ -127,10 +141,15 @@ export async function detectComputer(opts: DetectComputerOptions): Promise<Compu
         log(`desktop: Maritime hosted computer (${maritimeUrl})`);
         return maritime();
       }
-      log("desktop: none (no desktopd, no Maritime key)");
+      const browser = localBrowser();
+      if (browser) {
+        log(`desktop: none; ${browser.describe()}`);
+        return browser;
+      }
+      log("desktop: none (no desktopd, no Maritime key, no local Chromium)");
       return undefined;
     }
     default:
-      throw new Error(`unknown computer mode "${String(opts.mode)}"; use auto, desktopd, maritime or none`);
+      throw new Error(`unknown computer mode "${String(opts.mode)}"; use auto, desktopd, maritime, browser or none`);
   }
 }

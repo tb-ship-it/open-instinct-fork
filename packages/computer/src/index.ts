@@ -24,6 +24,14 @@ export {
 export { detectComputer, waitForDesktopd, DESKTOPD_WAIT_MS, DESKTOPD_BACKOFF_MS, type DetectComputerOptions, type WaitForDesktopdOptions } from "./detect.js";
 export { computerGuidance } from "./guidance.js";
 export {
+  LOCAL_BROWSER_CANDIDATES,
+  LOCAL_BROWSER_IDLE_MS,
+  LocalBrowserBackend,
+  browserGuidance,
+  playwrightMcpConfig,
+  type LocalBrowserBackendOptions,
+} from "./local-browser.js";
+export {
   ACTION_ENUM,
   ComputerActionSchema,
   ComputerBatchSchema,
