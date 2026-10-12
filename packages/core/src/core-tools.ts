@@ -492,8 +492,15 @@ function searchFlightsTool({ fetchImpl }: CoreToolDeps, apiKey: string): Registe
       if (options.length === 0) return textResult(`No flights found from ${params.departure_id} to ${params.arrival_id} on ${args.date}.`);
       const lines = options.map((o, i) => `${i + 1}. ${describeFlightOption(o, currency)}`);
       const insight = data.price_insights;
+      // Google prices a round trip as a pair. Say exactly what each number is, or totals get mixed across searches.
+      const pricing = args.departure_token
+        ? "Return options for the outbound flight whose departure_token you passed. Each price is the full ROUND-TRIP TOTAL for that outbound plus this return; it is not valid with any other outbound."
+        : args.return_date
+          ? "Outbound options. Each price is the cheapest ROUND-TRIP TOTAL that starts with that outbound; the real total depends on the return, so get it with that option's departure_token before quoting."
+          : "One-way options. Each price is the one-way total.";
       const head = [
-        args.departure_token ? "Return flights for the chosen outbound:" : `Flights ${params.departure_id} to ${params.arrival_id}, ${args.date}${args.return_date ? ` returning ${args.return_date} (round-trip prices)` : " (one-way)"}:`,
+        `Flights ${params.departure_id} to ${params.arrival_id}, ${args.date}${args.return_date ? `, returning ${args.return_date}` : ""}.`,
+        pricing,
         insight?.price_level ? `Prices are ${insight.price_level} for this route${insight.typical_price_range?.length === 2 ? ` (typical ${currency} ${insight.typical_price_range[0]}-${insight.typical_price_range[1]})` : ""}.` : "",
       ].filter(Boolean).join("\n");
       const link = data.search_metadata?.google_flights_url ? `\nGoogle Flights: ${data.search_metadata.google_flights_url}` : "";

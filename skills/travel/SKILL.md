@@ -26,7 +26,9 @@ rules, airport transfer time) but prices come from the booking pages.
 
 Without a desktop, Google Flights, Skyscanner and Kayak cannot be read:
 `browse_page` gets an empty result list from them, so do not spend its small
-quota there. If `search_flights` is available, use it for live fares. If
+quota there. If `search_flights` is available, use it for live fares. For a
+round trip, quote a total only from a return search (the outbound's
+`departure_token`), and never combine prices from two different searches. If
 not, say you cannot see live prices, do not guess fares, and send the owner the
 Google Flights link for their dates:
 `https://www.google.com/travel/flights?q=Flights%20from%20LON%20to%20HEL%20on%202026-10-25%20through%202026-10-27`

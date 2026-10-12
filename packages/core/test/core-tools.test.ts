@@ -447,6 +447,7 @@ describe("web tools", () => {
     expect(out).toContain("1. GBP 238 · Finnair AY 1340 · LHR 18:35 → HEL 23:30 · 2h55 · nonstop\n   departure_token: tok1");
     expect(out).toContain("2. GBP 161 · Norwegian DY 4304, DY 5320 · LGW 17:05 → HEL 23:35 · 5h30 · 1 stop (ARN 1h20)");
     expect(out).toContain("Prices are typical for this route (typical GBP 150-320).");
+    expect(out).toContain("cheapest ROUND-TRIP TOTAL that starts with that outbound");
     expect(out).toContain("Google Flights: https://www.google.com/travel/flights?tfs=x");
   });
 
