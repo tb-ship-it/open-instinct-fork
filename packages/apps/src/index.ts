@@ -26,6 +26,16 @@ export {
   type AppsState,
   type ToolkitStatus,
 } from "./composio.js";
+export {
+  resolveAccounts,
+  wrapAccountTool,
+  ACCOUNTS_STATE_FILE,
+  type AppAccount,
+  type AccountsClientLike,
+  type ConnectedAccountLike,
+  type ExecuteResultLike,
+  type ResolvedAccounts,
+} from "./accounts.js";
 export { appsGuidance, type AppsGuidanceOptions } from "./guidance.js";
 export { appsTools, describeStatus, type AppsLike, type AppsToolDeps } from "./tools.js";
 export { wrapMcpTool, wrapMcpTools, toolNameFor, describeCall, parametersFor, metaFor, TOOL_NAME_PREFIX, type McpToolSource } from "./wrap.js";

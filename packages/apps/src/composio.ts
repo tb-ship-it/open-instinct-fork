@@ -1,7 +1,9 @@
 import type { RegisteredTool, StateDir } from "@open-instinct/core";
 import { Composio } from "@composio/core";
 import { McpClient, StreamableHttpTransport } from "@earendil-works/pi-mcp";
-import { wrapMcpTools, type McpToolSource } from "./wrap.js";
+import { resolveAccounts, wrapAccountTool, type AccountsClientLike, type AppAccount } from "./accounts.js";
+import { toolkitOfSlug } from "./capabilities.js";
+import { wrapMcpTool, type McpToolSource } from "./wrap.js";
 
 /** File under the StateDir that remembers the Composio session for this owner. */
 export const APPS_STATE_FILE = "apps.json";
@@ -112,7 +114,7 @@ export interface ComposioSessionLike {
   }>;
 }
 
-export interface ComposioClientLike {
+export interface ComposioClientLike extends Partial<AccountsClientLike> {
   sessions: {
     create(userId: string, config: SessionCreateConfig): Promise<ComposioSessionLike>;
     use(id: string, options: { mcp: true }): Promise<ComposioSessionLike>;
@@ -257,15 +259,57 @@ export class ComposioApps {
     }
   }
 
-  /** Every MCP tool wrapped as a RegisteredTool. Cached after the first call. */
+  /**
+   * Every MCP tool wrapped as a RegisteredTool. Cached after the first call. Tools of a
+   * toolkit with several connected accounts run as the account the model names.
+   */
   async tools(opts: { refresh?: boolean } = {}): Promise<RegisteredTool[]> {
     await this.connect();
     if (!this.cachedTools || opts.refresh) {
-      this.cachedTools = await wrapMcpTools(this.requireClient());
-      this.log(`composio: ${this.cachedTools.length} app tools`);
+      const client = this.requireClient();
+      const routed = await this.routedAccounts();
+      const seen = new Set<string>();
+      const out: RegisteredTool[] = [];
+      for (const tool of await client.listTools()) {
+        const accounts = routed.get(toolkitOfSlug(tool.name));
+        const wrapped = accounts ? wrapAccountTool(tool, accounts, this.executeAs) : wrapMcpTool(client, tool);
+        if (seen.has(wrapped.spec.name)) continue;
+        seen.add(wrapped.spec.name);
+        out.push(wrapped);
+      }
+      this.cachedTools = out;
+      this.log(`composio: ${out.length} app tools`);
     }
     return this.cachedTools;
   }
+
+  /** Accounts per toolkit, for toolkits with more than one connection. Empty until tools() ran. */
+  accountsByToolkit(): Map<string, AppAccount[]> {
+    return this.routed ?? new Map();
+  }
+
+  private routed?: Map<string, AppAccount[]>;
+
+  private async routedAccounts(): Promise<Map<string, AppAccount[]>> {
+    const client = this.composio;
+    if (!client.connectedAccounts || !client.tools) return (this.routed = new Map());
+    try {
+      const { routed } = await resolveAccounts(client as AccountsClientLike, this.opts.userId, this.opts.state, (m) => this.log(m));
+      for (const [toolkit, accounts] of routed) this.log(`composio: ${toolkit} accounts: ${accounts.map((a) => a.label).join(", ")}`);
+      return (this.routed = routed);
+    } catch (err) {
+      // Accounts are an improvement on the session default, not a requirement to boot.
+      this.log(`composio: could not list connected accounts (${messageOf(err)}); using the session defaults`);
+      return (this.routed = new Map());
+    }
+  }
+
+  private readonly executeAs = (slug: string, connectedAccountId: string, args: Record<string, unknown>, signal?: AbortSignal) =>
+    (this.composio as AccountsClientLike).tools.execute(
+      slug,
+      { userId: this.opts.userId, connectedAccountId, arguments: args, dangerouslySkipVersionCheck: true },
+      signal ? { signal } : undefined,
+    );
 
   /** OAuth link the owner opens to connect a toolkit. Undefined when the toolkit needs no auth. */
   async connectLink(toolkit: string): Promise<string | undefined> {

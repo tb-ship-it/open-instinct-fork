@@ -3,6 +3,8 @@ export interface AppsGuidanceOptions {
   anyApp?: boolean;
   /** Configured toolkits left out because the Composio project has no auth config for them. */
   unavailable?: string[];
+  /** Toolkits connected for more than one of the owner's accounts, with each account's address. */
+  accounts?: Record<string, string[]>;
 }
 
 /**
@@ -27,6 +29,12 @@ export function appsGuidance(connected: string[], missing: string[], opts: AppsG
   if (unavailable.length > 0) {
     lines.push(
       `Not available yet: ${unavailable.join(", ")}. The person running this agent must add a Composio auth config for ${unavailable.length === 1 ? "it" : "them"} first; until then apps_connect cannot connect ${unavailable.length === 1 ? "it" : "them"}. Say so plainly if the owner asks.`,
+    );
+  }
+  const several = Object.entries(opts.accounts ?? {}).filter(([, labels]) => labels.length > 1);
+  if (several.length > 0) {
+    lines.push(
+      `Several accounts: ${several.map(([toolkit, labels]) => `${toolkit} (${labels.join(", ")})`).join("; ")}. Their app_ tools take "account": choose it from what the task belongs to and the owner's routing rules, never by habit. Name the account in your reply ("drafted in thomas@..."). When it is unclear which account a task belongs to, ask.`,
     );
   }
   if (opts.anyApp) {
