@@ -11,7 +11,7 @@ import { MemoryStore } from "../src/memory.js";
 import { PolicyEngine, defaultPolicy } from "../src/policy.js";
 import { coreTools } from "../src/core-tools.js";
 import { A2AStore } from "../src/a2a-state.js";
-import { AgentRuntime, InboundUncertainError, SESSION_KEEP_MESSAGES, hashArgs, restoreMessages, runtimeKey, stableJson, type Outbox, type RuntimeDeps } from "../src/runtime.js";
+import { AgentRuntime, InboundUncertainError, isFreshStartCommand, SESSION_KEEP_MESSAGES, hashArgs, restoreMessages, runtimeKey, stableJson, type Outbox, type RuntimeDeps } from "../src/runtime.js";
 import { Scheduler } from "../src/scheduler.js";
 import { ToolRegistry, defineTool, textResult, type RegisteredTool } from "../src/tools.js";
 import type { InboundMessage, OutboundMessage, Policy, Principal } from "../src/types.js";
@@ -396,6 +396,30 @@ describe("AgentRuntime.handleInbound", () => {
       await Promise.all([first, second]);
       expect(h.sent.map((s) => s.msg.text)).toEqual(["Sounds good.", "Sounds good."]);
     });
+  });
+
+  it("starts a text thread over on /new, archiving the old transcript", async () => {
+    const h = harness();
+    h.faux.setResponses([textTurn("Noted, aisle seats."), textTurn("Fresh reply")]);
+    await h.runtime.handleInbound(inbound({ id: "m1", channel: "sms", from: OWNER_PHONE, conversationKey: "sms:c1", text: "I like aisle seats" }));
+    const reset = await h.runtime.handleInbound(inbound({ id: "m2", channel: "sms", from: OWNER_PHONE, conversationKey: "sms:c1", text: " /New " }));
+    expect(reset.reply).toContain("Fresh start");
+    expect(h.sent.at(-1)!.msg).toMatchObject({ channel: "sms", conversationKey: "sms:c1" });
+    expect(h.sent.at(-1)!.msg.text).toContain("Fresh start");
+    await h.runtime.handleInbound(inbound({ id: "m3", channel: "sms", from: OWNER_PHONE, conversationKey: "sms:c1", text: "what's next?" }));
+    const key = runtimeKey(inbound({ channel: "sms", from: OWNER_PHONE, conversationKey: "sms:c1", text: "" }), h.runtime.conversation("sms:c1", { kind: "owner", id: "owner", tier: "owner", displayName: "Maria" }).principal);
+    const texts = userTexts(h.runtime.conversation(key, { kind: "owner", id: "owner", tier: "owner", displayName: "Maria" }).agent.state.messages);
+    expect(texts.some((t) => t.includes("aisle seats"))).toBe(false);
+    expect(texts.some((t) => t.includes("what's next?"))).toBe(true);
+    const sessions = fs.readdirSync(h.deps.state.path("sessions"));
+    expect(sessions.some((f) => f.includes(".archived-"))).toBe(true);
+    expect(h.deps.audit.read({ kinds: ["policy"] }).some((e) => (e.detail as { reset?: string }).reset === "fresh start requested")).toBe(true);
+  });
+
+  it("treats /new inside a longer message as ordinary text", async () => {
+    expect(isFreshStartCommand("/new")).toBe(true);
+    expect(isFreshStartCommand("New conversation.")).toBe(true);
+    expect(isFreshStartCommand("what's /new in my inbox")).toBe(false);
   });
 
   it("deduplicates by message id", async () => {

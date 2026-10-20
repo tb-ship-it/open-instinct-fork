@@ -9,7 +9,7 @@
  * stranger in the group never sees what the owner's turns put in context.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Agent, type AgentMessage, type AgentTool, type BeforeToolCallResult, type StreamFn } from "@earendil-works/pi-agent-core";
 import { createInitialSystemMessage, toToolDeclaration, type ImageContent, type Model } from "@earendil-works/pi-ai";
@@ -544,6 +544,12 @@ export class AgentRuntime {
         if (!match.remainder) return { ...base, acked: true, reply: approvalNote };
         text = match.remainder;
       }
+    }
+
+    // "/new" starts the conversation over: on a text thread there is no other way to drop
+    // a long history, and every turn of it is paid for again on each message.
+    if (!group && !msg.meta?.delegatedResult && msg.channel !== "a2a" && isFreshStartCommand(text)) {
+      return this.freshStart(msg, principal, routedKey, base);
     }
 
     // Everything the sender controls (text, attachment names, data parts) sits inside the
@@ -1120,6 +1126,32 @@ export class AgentRuntime {
     this.deps.state.writeJson(SEEN_FILE, seen.slice(-SEEN_IDS_MAX));
   }
 
+  /**
+   * Archive this sender's transcript and continue with an empty one. Long-term memory,
+   * contacts and schedules are untouched. A conversation that is mid-run is left alone.
+   */
+  private async freshStart(msg: InboundMessage, principal: Principal, routedKey: string | undefined, base: { principal: Principal; conversationKey: string }): Promise<HandleResult> {
+    const key = routedKey ?? runtimeKey(msg, principal);
+    const live = this.conversations.get(key);
+    if (live?.busy) {
+      const reply = "I'm still working on your last request. Send /new again once I've replied.";
+      if (DELIVERABLE.has(msg.channel)) await this.deliver(live, reply);
+      return { ...base, acked: true, reply };
+    }
+    const file = join(this.sessionsDir, `${encodeURIComponent(key)}.jsonl`);
+    if (existsSync(file)) {
+      const stamp = this.now().toISOString().replace(/[:.]/g, "-");
+      renameSync(file, join(this.sessionsDir, `${encodeURIComponent(key)}.archived-${stamp}.jsonl`));
+    }
+    this.conversations.delete(key);
+    this.takeStash(key);
+    const conv = this.createConversation(key, principal, { deliveryKey: msg.conversationKey, replyRef: msg.replyRef }, []);
+    this.deps.audit.append({ kind: "policy", conversationKey: key, principal: principal.id, detail: { reset: "fresh start requested" } });
+    const reply = "Fresh start: this conversation is cleared. What I've saved to memory is unchanged.";
+    if (DELIVERABLE.has(msg.channel)) await this.deliver(conv, reply);
+    return { ...base, acked: true, reply };
+  }
+
   private rememberConversation(conv: Conversation): void {
     const map = this.deps.state.readJson<Record<string, unknown>>(CONVERSATIONS_FILE, {});
     const record: ConversationRecord = { principal: conv.principal, deliveryKey: conv.deliveryKey, replyRef: conv.replyRef };
@@ -1547,6 +1579,12 @@ function isGroup(msg: InboundMessage): boolean {
  * per principal, so each participant has their own Agent and transcript while replies
  * still land in the shared thread.
  */
+/** "/new", "/reset" or "new conversation", alone in the message, case and punctuation aside. */
+export function isFreshStartCommand(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/[.!]+$/, "");
+  return t === "/new" || t === "/reset" || t === "new conversation" || t === "fresh start";
+}
+
 export function runtimeKey(msg: InboundMessage, principal: Principal): string {
   if (msg.channel === "a2a" && msg.replyRef.taskId) return `${msg.conversationKey}:task:${msg.replyRef.taskId}${msg.replyRef.messageId ? `:message:${msg.replyRef.messageId}` : ""}`;
   if (!isGroup(msg)) return msg.conversationKey;
