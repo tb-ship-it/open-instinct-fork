@@ -1,0 +1,83 @@
+# Nightly: merge the source repo (mariagorskikh/open-instinct) into this fork's main.
+# The merge is pushed only when it is clean and the build and tests pass; otherwise main
+# stays as it was and an issue says why. Rufus pulls main at 04:00 London time.
+name: sync-upstream
+
+on:
+  schedule:
+    - cron: "0 1 * * *" # 01:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'tb-ship-it/open-instinct-fork'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge the source repo
+        id: merge
+        run: |
+          git config user.name "sync-upstream"
+          git config user.email "sync-upstream@users.noreply.github.com"
+          git remote add upstream https://github.com/mariagorskikh/open-instinct.git
+          git fetch -q upstream main
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already up to date."; echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "range=$(git rev-parse --short HEAD)..$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
+          if ! git merge --no-edit upstream/main; then
+            git diff --name-only --diff-filter=U > conflicts.txt
+            git merge --abort
+            echo "failed=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.merge.outputs.changed == 'true' && steps.merge.outputs.failed == ''
+        with:
+          node-version: 22.20.0
+
+      - name: Build and test the merge
+        id: check
+        if: steps.merge.outputs.changed == 'true' && steps.merge.outputs.failed == ''
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm -r test
+
+      - name: Push
+        id: push
+        if: steps.merge.outputs.changed == 'true' && steps.merge.outputs.failed == '' && steps.check.outcome == 'success'
+        run: git push origin HEAD:main
+
+      - name: Open an issue when the sync could not land
+        if: always() && steps.merge.outputs.changed == 'true' && steps.push.outcome != 'success'
+        run: |
+          case "${{ steps.merge.outputs.failed }}" in
+            conflict) why="The merge conflicts in: $(paste -sd ' ' conflicts.txt)";;
+            *) if [ "${{ steps.check.outcome }}" != "success" ]; then why="The merge built or tested red (see the run log)."; else why="The push was refused, usually because the source changed a workflow file, which this token may not push. Press Sync fork on the repo page instead."; fi;;
+          esac
+          body="Source changes ${{ steps.merge.outputs.range }} were not merged into main. ${why}
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          main is unchanged, so Rufus keeps running the last good code."
+          title="Upstream sync needs a hand"
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number -q '.[0].number' 2>/dev/null || true)
+          # Issues are off by default in a fork; the failed run still emails the repo owner.
+          if [ -n "$existing" ]; then gh issue comment "$existing" --body "$body" || true; else gh issue create --title "$title" --body "$body" || true; fi
+          echo "$why"; exit 1
