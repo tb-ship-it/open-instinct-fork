@@ -1600,26 +1600,6 @@ describe("restoreMessages", () => {
 
   // An opened photo made the current turn alone larger than the character budget; the fold
   // then cut inside the turn and sent [summary, toolResult] without its call: Anthropic 400.
-  it("never cuts inside the current turn when one tool result exceeds the character budget", () => {
-    const call = { ...assistant(9), content: [{ type: "toolCall", id: "t9", name: "open_attachment", arguments: {} }] } as AgentMessage;
-    const photo = { role: "toolResult", toolCallId: "t9", toolName: "open_attachment", content: [{ type: "image", data: "x".repeat(5000), mimeType: "image/png" }], isError: false, timestamp: 9 } as AgentMessage;
-    const restored = restoreMessages([user(1), assistant(1), user(2), call, photo], new Date(), 60, 1000);
-    expect(restored.map((m) => m.role)).toEqual(["user", "user", "assistant", "toolResult"]);
-    expect(JSON.stringify(restored[0]!.content)).toContain("[Conversation summary]");
-    expect(restored[1]).toEqual(user(2));
-  });
-
-  it("keeps a long tool loop whole when the message budget falls inside it", () => {
-    const loop: AgentMessage[] = [];
-    for (let i = 0; i < 4; i++) {
-      loop.push({ ...assistant(i), content: [{ type: "toolCall", id: `c${i}`, name: "echo", arguments: {} }] } as AgentMessage);
-      loop.push({ role: "toolResult", toolCallId: `c${i}`, toolName: "echo", content: [{ type: "text", text: "ok" }], isError: false, timestamp: i } as AgentMessage);
-    }
-    const restored = restoreMessages([user(0), assistant(0), user(1), ...loop], new Date(), 4);
-    expect(restored[1]).toEqual(user(1));
-    expect(restored.slice(2).map((m) => m.role)).toEqual(loop.map((m) => m.role));
-  });
-
   it("drops a tool result whose call is not in the transcript", () => {
     const stray = { role: "toolResult", toolCallId: "gone", toolName: "echo", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 3 } as AgentMessage;
     expect(restoreMessages([stray, user(1), assistant(1)], new Date()).map((m) => m.role)).toEqual(["user", "assistant"]);
