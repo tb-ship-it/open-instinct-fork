@@ -23,6 +23,7 @@ import {
   ensurePersona,
   loadConfig,
   ownerClaimStatus,
+  ownerPrincipalOf,
   syncInstructions,
   loadPolicy,
   resolveDataDir,
@@ -50,7 +51,7 @@ import { createSkillCatalog, formatSkillsIndex, loadSkillTool, ownerSkillsDir, r
 
 /** How often the skill folders are re-read; an owner-installed skill shows up within this. */
 const SKILLS_REFRESH_MS = 30_000;
-import { ChannelRouter, whatsappEnabled } from "./whatsapp.js";
+import { ChannelRouter, WhatsAppWatch, whatsappEnabled, type WhatsAppHealth } from "./whatsapp.js";
 
 export interface BootOptions {
   streamFn?: StreamFn;
@@ -163,15 +164,33 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
   // WhatsApp: the agent's own account as a linked device. Replies on the whatsapp channel go
   // through it; everything else keeps the transport above. It starts once the runtime exists.
   let whatsappInbox: DurableInbox<InboundMessage> | undefined;
+  const whatsappPhone = env.WHATSAPP_PHONE?.trim() || undefined;
+  // Emails the owner before WhatsApp unlinks the agent for want of its phone (14 days), and when it has.
+  const whatsappWatch = whatsappEnabled(env)
+    ? new WhatsAppWatch({
+        load: () => state.readJson<WhatsAppHealth>("whatsapp-health.json", {}),
+        save: (health) => state.writeJson("whatsapp-health.json", health),
+        email: async (subject, body) => {
+          const to = config.owner.emails[0];
+          if (!to) throw new Error("no owner email in config.json");
+          await outbox.send({ channel: "email", to, text: body, replyRef: { subject } }, { principal: ownerPrincipalOf(config), conversationKey: "system:whatsapp" });
+        },
+        ...(whatsappPhone ? { phone: whatsappPhone } : {}),
+        log,
+      })
+    : undefined;
   const whatsapp = whatsappEnabled(env)
     ? new WhatsAppChannel({
         authDir: state.path("secrets", "whatsapp"),
         mediaDir: state.path("workspace", "inbound"),
-        ...(env.WHATSAPP_PHONE?.trim() ? { phone: env.WHATSAPP_PHONE.trim() } : {}),
+        ...(whatsappPhone ? { phone: whatsappPhone } : {}),
         onInbound: (message) => void whatsappInbox?.enqueue(message.id, message),
+        onPhoneActive: (at) => whatsappWatch?.phoneActive(at),
+        onLoggedOut: () => void whatsappWatch?.loggedOut(),
         logger: log,
       })
     : undefined;
+  let whatsappWatchTimer: NodeJS.Timeout | undefined;
   if (whatsapp) outbox = new ChannelRouter(outbox, { whatsapp });
 
   const registry = new ToolRegistry();
@@ -476,6 +495,11 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
     // Starting it also picks up messages saved before a restart.
     whatsappInbox.start();
     await safely(log, "whatsapp", () => whatsapp.start());
+    if (whatsappWatch) {
+      void whatsappWatch.check();
+      whatsappWatchTimer = setInterval(() => void whatsappWatch.check(), 60 * 60 * 1000);
+      whatsappWatchTimer.unref();
+    }
   }
 
   let sync: ScheduleSync | undefined;
@@ -518,6 +542,7 @@ export async function boot(env: NodeJS.ProcessEnv, opts: BootOptions = {}): Prom
     ...(channel ? { onCallEnded: callReporter(channel, (text, key) => runtime.relayToOwner(text, key), log) } : {}),
     async close() {
       stopScheduler();
+      if (whatsappWatchTimer) clearInterval(whatsappWatchTimer);
       await safely(log, "whatsapp close", async () => {
         await whatsapp?.stop();
         await whatsappInbox?.close();

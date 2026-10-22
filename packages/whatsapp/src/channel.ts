@@ -50,7 +50,19 @@ export interface WhatsAppChannelOptions {
   onInbound: (msg: InboundMessage) => void | Promise<void>;
   logger?: (m: string) => void;
   maxMediaBytes?: number;
+  /**
+   * The phone holding the account was just seen online: it linked us, or it sent a message
+   * itself. WhatsApp unlinks companions after 14 days without the phone, so the caller can
+   * count from here.
+   */
+  onPhoneActive?: (at: Date) => void;
+  /** WhatsApp logged this device out (unlinked on the phone, or the 14 days ran out). */
+  onLoggedOut?: () => void;
 }
+
+/** Only a message the phone sent recently counts as the phone being online now. */
+const PHONE_ACTIVITY_WINDOW_S = 10 * 60;
+const SENT_IDS_KEPT = 500;
 
 export class WhatsAppChannel implements Outbox {
   private sock?: WASocket;
@@ -60,6 +72,9 @@ export class WhatsAppChannel implements Outbox {
   private retryTimer?: NodeJS.Timeout;
   private pairingAttempts = 0;
   private waVersion?: [number, number, number];
+  /** Ids of messages this process sent, so they are not mistaken for the phone's. */
+  private readonly sentIds = new Set<string>();
+  private justPaired = false;
   private openWaiters: Array<() => void> = [];
   private readonly log: (m: string) => void;
 
@@ -90,8 +105,8 @@ export class WhatsAppChannel implements Outbox {
     if (!jid) throw new Error("WhatsApp send needs a whatsapp: conversation or a phone number");
     const sock = await this.openSocket();
     const text = msg.text.trim();
-    if (text) await sock.sendMessage(jid, { text });
-    for (const url of msg.mediaUrls ?? []) await sock.sendMessage(jid, { text: url });
+    if (text) this.rememberSent(await sock.sendMessage(jid, { text }));
+    for (const url of msg.mediaUrls ?? []) this.rememberSent(await sock.sendMessage(jid, { text: url }));
     await sock.sendPresenceUpdate("paused", jid).catch(() => undefined);
   }
 
@@ -133,11 +148,17 @@ export class WhatsAppChannel implements Outbox {
         this.retryMs = RECONNECT_MIN_MS;
         this.pairingAttempts = 0;
         this.log(`whatsapp: connected as ${phoneFromJid(sock.user?.id) ?? sock.user?.id ?? "unknown"}`);
+        if (this.justPaired) {
+          // The phone just linked us, so it is online now.
+          this.justPaired = false;
+          this.opts.onPhoneActive?.(new Date());
+        }
         for (const wake of this.openWaiters.splice(0)) wake();
       }
       if (update.connection === "close") this.onClose(sock, update.lastDisconnect?.error, Boolean(auth.creds.registered));
     });
     sock.ev.on("messages.upsert", ({ messages, type }) => {
+      this.notePhoneActivity(messages);
       if (type !== "notify") {
         const fresh = messages.filter((m) => !m.key?.fromMe && isDirectChat(m.key?.remoteJid) && Date.now() / 1000 - Number(m.messageTimestamp ?? 0) < 120);
         if (fresh.length) this.log(`whatsapp: ${fresh.length} recent message(s) arrived as "${type}" (history), not acted on`);
@@ -154,6 +175,7 @@ export class WhatsAppChannel implements Outbox {
     }
     try {
       const code = await sock.requestPairingCode(this.opts.phone.replace(/\D/g, ""));
+      this.justPaired = true;
       const pretty = code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
       this.log(`whatsapp: pairing code ${pretty}. On the phone with the agent's WhatsApp: Settings > Linked devices > Link a device > Link with phone number instead. It shows up as "Chrome (Ubuntu)".`);
     } catch (err) {
@@ -169,6 +191,7 @@ export class WhatsAppChannel implements Outbox {
       this.state = "logged_out";
       this.clearAuth();
       this.log("whatsapp: logged out by WhatsApp. Restart to get a new pairing code.");
+      this.opts.onLoggedOut?.();
       return;
     }
     if (!registered && code !== DisconnectReason.restartRequired) {
@@ -194,6 +217,22 @@ export class WhatsAppChannel implements Outbox {
     this.retryMs = Math.min(this.retryMs * 2, RECONNECT_MAX_MS);
     if (delay > 0) this.log(`whatsapp: connection closed (${code ?? "no code"}); retrying in ${Math.round(delay / 1000)}s`);
     this.retryTimer = setTimeout(() => void this.connect().catch((err: Error) => this.log(`whatsapp: reconnect failed: ${err.message}`)), delay);
+  }
+
+  private rememberSent(m: WAMessage | undefined): void {
+    const id = m?.key?.id;
+    if (!id) return;
+    this.sentIds.add(id);
+    if (this.sentIds.size > SENT_IDS_KEPT) this.sentIds.delete(this.sentIds.values().next().value!);
+  }
+
+  /** A message from this account that this process did not send was sent from the phone. */
+  private notePhoneActivity(messages: WAMessage[]): void {
+    const now = Date.now() / 1000;
+    const fromPhone = messages.some(
+      (m) => m.key?.fromMe && m.key.id && !this.sentIds.has(m.key.id) && now - Number(m.messageTimestamp ?? 0) < PHONE_ACTIVITY_WINDOW_S,
+    );
+    if (fromPhone) this.opts.onPhoneActive?.(new Date());
   }
 
   /** Empty the credentials folder, keeping the folder itself. */

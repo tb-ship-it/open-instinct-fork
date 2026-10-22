@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   sync:
-    if: github.repository == 'tb-ship-it/open-instinct-fork'
+    if: github.repository == 'tb-ship-it/open-instinct-bobby'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
